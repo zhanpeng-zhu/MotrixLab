@@ -9,6 +9,8 @@ from motrix_env_core.input.bindings import (
     ConstantPlanarVelocityBinding,
     GamePadPlanarVelocityBinding,
     KeyboardPlanarVelocityBinding,
+    RateLimitedPlanarVelocityBinding,
+    ScalableKeyboardPlanarVelocityBinding,
 )
 from motrix_env_core.input.command import PlanarVelocityCommand
 from motrix_env_core.input.device import GamePadDevice, InputDevice, KeyboardDevice
@@ -22,5 +24,7 @@ __all__ = [
     "InputDevice",
     "KeyboardDevice",
     "KeyboardPlanarVelocityBinding",
+    "RateLimitedPlanarVelocityBinding",
+    "ScalableKeyboardPlanarVelocityBinding",
     "PlanarVelocityCommand",
 ]

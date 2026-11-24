@@ -29,6 +29,7 @@ from motrix_deploy.artifact import (
 )
 from motrix_deploy.artifact.schema import PayloadSpec
 from motrix_deploy.contracts import RobotSpec, TensorSpec
+from motrix_deploy.config import SimRuntimeCfg
 from motrix_deploy.env import assemble_deploy_scene, create_deploy_env
 from motrix_deploy_tasks.tasks.go2_walk import Go2WalkTaskSpec
 from motrix_env_core.config.scene import FlatTerrainCfg, HFieldTerrainCfg, SceneCfg
@@ -191,6 +192,24 @@ def test_mujoco_hydra_recipes_assemble_robot_and_selected_world(
     assert cfg.runtime.physics.solver_iterations > 0
     assert len(cfg.runtime.robot_translation) == 3
     assert np.linalg.norm(cfg.runtime.robot_rotation) == pytest.approx(1.0)
+
+
+def test_go2_flat_sim_recipe_overrides_floor_sliding_friction() -> None:
+    with initialize_config_module(version_base=None, config_module="motrix_deploy.config"):
+        cfg = compose(
+            config_name="deploy",
+            overrides=[
+                "task=go2-walk-flat/sim",
+                "artifact=artifact.deploy",
+                "runtime.floor_sliding_friction=0.4",
+            ],
+        )
+
+    runtime_cfg = OmegaConf.to_object(cfg.runtime)
+    assert isinstance(runtime_cfg, SimRuntimeCfg)
+    runtime = runtime_cfg.build_runtime_config()
+
+    assert runtime.scene.objs.floor.friction == pytest.approx((0.4, 0.005, 0.0001))
 
 
 @pytest.mark.parametrize("deploy_env_id", ["flat", "rough"])
@@ -456,7 +475,7 @@ def _robot_spec() -> RobotSpec:
             "RR_calf_joint",
         ),
         default_joint_position=np.array(
-            [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 1.0, -1.5, 0.0, 1.0, -1.5],
+            [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 0.8, -1.5],
             dtype=np.float32,
         ),
         position_lower=np.tile(np.array([-0.9472, -1.4, -2.6227], dtype=np.float32), 4),

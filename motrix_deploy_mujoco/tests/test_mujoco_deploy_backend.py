@@ -9,6 +9,7 @@ import textwrap
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -17,8 +18,9 @@ from motrix_robots.unitree import UnitreeGo1Robot, UnitreeGo2Robot
 from omegaconf import OmegaConf
 from scene_helpers import AdapterSceneObjsCfg, build_scene
 
-from motrix_deploy.contracts import JointServoCommand, RobotSpec
+from motrix_deploy.contracts import JointServoCommand, RobotSpec, RobotState
 from motrix_deploy.errors import ValidationError
+from motrix_deploy.runtime.control import ControlSession
 from motrix_deploy.runtime.config import SensorBindings, SimulationRuntimeConfig
 from motrix_deploy_mujoco import (
     MujocoRuntime,
@@ -310,6 +312,78 @@ def test_glfw_viewer_syncs_without_owning_simulation_step() -> None:
     assert viewer.open_count == 2
     backend.close()
     assert viewer.close_count == 2
+
+
+def test_viewer_overlay_reports_scaled_target_and_body_frame_measured_velocity() -> None:
+    class FakeViewer:
+        def __init__(self) -> None:
+            self.overlay: tuple[str, str] | None = None
+
+        def is_running(self) -> bool:
+            return True
+
+        def sync(self) -> None: ...
+
+        def set_overlay(self, primary: str, secondary: str) -> None:
+            self.overlay = (primary, secondary)
+
+    class FakeController:
+        def reset(self, state: Any) -> None: ...
+
+        def step(self, state: Any, context: Any) -> Any:
+            return SimpleNamespace(
+                error=None, complete=True, success=True, command=None, policy_tick=False, latency_ns={}, trace_bytes=b""
+            )
+
+    def binding_factory() -> Any:
+        class Binding:
+            def __init__(self, inner: Any) -> None:
+                self._binding = inner
+
+            def read_command(self, *, batch_size: int = 1) -> Any:
+                del batch_size
+                return SimpleNamespace(values=np.array([[0.4, 0.25, -0.1]], dtype=np.float32))
+
+        return Binding(
+            SimpleNamespace(
+                axis_speed_scales=(0.4, 0.3, 0.2),
+                speed_levels=(0.1, 0.2, 0.3, 0.4),
+            )
+        )
+
+    backend = _backend()
+    viewer = FakeViewer()
+    backend.viewer = viewer
+    state = RobotState(
+        sample_time_ns=0,
+        receive_time_ns=0,
+        joint_position=np.zeros(12, dtype=np.float32),
+        joint_velocity=np.zeros(12, dtype=np.float32),
+        base_orientation_xyzw=np.array([0.0, 0.0, 0.70710678, 0.70710678], dtype=np.float32),
+        base_angular_velocity=np.array([0.0, 0.0, -0.2], dtype=np.float32),
+        base_linear_acceleration=np.zeros(3, dtype=np.float32),
+        base_linear_velocity=np.array([0.2, 0.1, 0.0], dtype=np.float32),
+    )
+    session = ControlSession(
+        controller=FakeController(),
+        robot=backend.robot,
+        command_binding=binding_factory(),  # type: ignore[arg-type]
+        period_s=0.02,
+        state_timeout_s=0.1,
+    )
+    session.last_state = state
+    session.last_command = SimpleNamespace(values=np.array([[0.4, 0.25, -0.1]], dtype=np.float32))
+    backend.bind_session(session)  # type: ignore[arg-type]
+
+    backend.sync_viewer()
+
+    assert viewer.overlay is not None
+    primary, secondary = viewer.overlay
+    assert primary.splitlines()[0] == "Go2 speed control  all 40%  |  W/S 40%  A/D 30%  Q/E 20%"
+    assert primary.splitlines()[1] == "levels 0.1/0.2/0.3/0.4"
+    assert primary.splitlines()[2] == "target  vx=+0.400 m/s  vy=+0.250 m/s  yaw=-0.100 rad/s"
+    assert primary.splitlines()[3] == "measured vx=+0.100 m/s  vy=+0.200 m/s  yaw=-0.200 rad/s"
+    assert secondary == "UP/DOWN all  1/2 W/S speed  3/4 A/D speed  5/6 Q/E speed"
 
 
 @pytest.mark.integration

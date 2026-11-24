@@ -62,6 +62,94 @@ class KeyboardPlanarVelocityBinding(CommandBinding[PlanarVelocityCommand]):
         return PlanarVelocityCommand(np.repeat(value[None, :], batch_size, axis=0))
 
 
+class ScalableKeyboardPlanarVelocityBinding(CommandBinding[PlanarVelocityCommand]):
+    """Map held movement keys to independently adjustable command fractions.
+
+    ``UP``/``DOWN`` change all three scales together. Number-key pairs adjust
+    one axis at a time: ``1``/``2`` forward/reverse, ``3``/``4`` lateral, and
+    ``5``/``6`` yaw. Movement keys produce commands at the selected scales.
+    """
+
+    def __init__(
+        self,
+        device: KeyboardDevice,
+        *,
+        command_lower: Sequence[float] | FloatArray,
+        command_upper: Sequence[float] | FloatArray,
+        levels: Sequence[float] | None = None,
+    ) -> None:
+        self._binding = KeyboardPlanarVelocityBinding(
+            device,
+            command_lower=command_lower,
+            command_upper=command_upper,
+        )
+        self._device = device
+        self._command_lower = np.asarray(command_lower, dtype=np.float32)
+        self._command_upper = np.asarray(command_upper, dtype=np.float32)
+        if self._command_lower.shape != (3,) or self._command_upper.shape != (3,):
+            raise ValueError("keyboard command lower and upper must have shape (3,)")
+        if levels is None:
+            levels = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+        self._levels = tuple(float(value) for value in levels)
+        if not self._levels:
+            raise ValueError("speed levels must not be empty")
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value)
+            for value in self._levels
+        ):
+            raise ValueError("speed levels must contain finite numbers")
+        if any(value <= 0.0 or value > 1.0 for value in self._levels):
+            raise ValueError("speed levels must be inside (0, 1]")
+        if len(set(self._levels)) != len(self._levels):
+            raise ValueError("speed levels must be unique")
+        self._levels = tuple(sorted(self._levels))
+        self._level_indexes = np.full(3, len(self._levels) - 1, dtype=np.int32)
+
+    @property
+    def speed_scale(self) -> float:
+        return self._levels[self._level_indexes[0]]
+
+    @property
+    def axis_speed_scales(self) -> tuple[float, float, float]:
+        return tuple(self._levels[index] for index in self._level_indexes)  # type: ignore[return-value]
+
+    @property
+    def speed_levels(self) -> tuple[float, ...]:
+        return self._levels
+
+    @property
+    def speed_level_index(self) -> int:
+        return int(self._level_indexes[0])
+
+    @property
+    def axis_speed_level_indexes(self) -> tuple[int, int, int]:
+        return tuple(int(index) for index in self._level_indexes)
+
+    def _select_scale(self) -> None:
+        changes = (
+            (("up", "down"), (0, 1, 2)),
+            (("1", "2"), (0,)),
+            (("3", "4"), (1,)),
+            (("5", "6"), (2,)),
+        )
+        for (increase_key, decrease_key), axes in changes:
+            if self._device.is_key_down(increase_key):
+                for axis in axes:
+                    self._level_indexes[axis] = min(self._level_indexes[axis] + 1, len(self._levels) - 1)
+            if self._device.is_key_down(decrease_key):
+                for axis in axes:
+                    self._level_indexes[axis] = max(self._level_indexes[axis] - 1, 0)
+
+    def read_command(self, *, batch_size: int = 1) -> PlanarVelocityCommand:
+        _validate_batch_size(batch_size)
+        # The inner binding polls exactly once and freezes the frame. Reading
+        # scale edges afterward shares that same frame instead of discarding it.
+        command = self._binding.read_command(batch_size=1).values[0, :]
+        self._select_scale()
+        value = command * np.asarray(self.axis_speed_scales, dtype=np.float32)
+        return PlanarVelocityCommand(np.repeat(value[None, :], batch_size, axis=0))
+
+
 class GamePadPlanarVelocityBinding(CommandBinding[PlanarVelocityCommand]):
     """Map three gamepad axes to planar velocity."""
 
@@ -190,6 +278,52 @@ class ConstantPlanarVelocityBinding(CommandBinding[PlanarVelocityCommand]):
         return PlanarVelocityCommand(np.repeat(self._value[None, :], batch_size, axis=0))
 
 
+class RateLimitedPlanarVelocityBinding(CommandBinding[PlanarVelocityCommand]):
+    """Limit per-axis command change with separate acceleration and braking rates."""
+
+    def __init__(
+        self,
+        binding: CommandBinding[PlanarVelocityCommand],
+        *,
+        max_acceleration: Sequence[float] | FloatArray,
+        startup_acceleration: Sequence[float] | FloatArray | None = None,
+        stop_acceleration: Sequence[float] | FloatArray | None = None,
+        dt_s: float,
+    ) -> None:
+        self._binding = binding
+        startup = np.asarray(
+            max_acceleration if startup_acceleration is None else startup_acceleration,
+            dtype=np.float32,
+        )
+        stop = np.asarray(max_acceleration if stop_acceleration is None else stop_acceleration, dtype=np.float32)
+        for name, values in (("max/startup_acceleration", startup), ("max/stop_acceleration", stop)):
+            if values.shape != (3,) or not np.all(np.isfinite(values)):
+                raise ValueError(f"{name} must contain three finite values")
+            if np.any(values <= 0.0):
+                raise ValueError(f"{name} values must be positive")
+        self._startup_acceleration = startup
+        self._stop_acceleration = stop
+        if isinstance(dt_s, bool) or not isinstance(dt_s, (int, float)) or not np.isfinite(dt_s) or dt_s <= 0.0:
+            raise ValueError("dt_s must be a positive finite number")
+        self._dt_s = float(dt_s)
+        self._previous = np.zeros(3, dtype=np.float32)
+
+    def read_command(self, *, batch_size: int = 1) -> PlanarVelocityCommand:
+        target = self._binding.read_command(batch_size=1).values[0, :]
+        delta = target - self._previous
+        moving_away_from_zero = np.sign(delta) == np.sign(self._previous)
+        moving_from_rest = self._previous == 0.0
+        accelerates = moving_away_from_zero | moving_from_rest
+        maximum_delta = np.where(
+            accelerates,
+            self._startup_acceleration * self._dt_s,
+            self._stop_acceleration * self._dt_s,
+        ).astype(np.float32)
+        limited = self._previous + np.clip(delta, -maximum_delta, maximum_delta)
+        self._previous = limited.astype(np.float32)
+        return PlanarVelocityCommand(np.repeat(self._previous[None, :], batch_size, axis=0))
+
+
 def _validate_batch_size(batch_size: int) -> None:
     if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
         raise ValueError("batch_size must be a positive integer")
@@ -201,4 +335,6 @@ __all__ = [
     "ConstantPlanarVelocityBinding",
     "GamePadPlanarVelocityBinding",
     "KeyboardPlanarVelocityBinding",
+    "RateLimitedPlanarVelocityBinding",
+    "ScalableKeyboardPlanarVelocityBinding",
 ]

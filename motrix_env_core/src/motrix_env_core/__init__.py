@@ -24,6 +24,8 @@ from motrix_env_core.input import (
     InputDevice,
     KeyboardDevice,
     KeyboardPlanarVelocityBinding,
+    RateLimitedPlanarVelocityBinding,
+    ScalableKeyboardPlanarVelocityBinding,
     PlanarVelocityCommand,
 )
 from motrix_env_core.perf import Perf, PerfNode, perf_root, perf_scope
@@ -39,6 +41,8 @@ __all__ = [
     "InputDevice",
     "KeyboardDevice",
     "KeyboardPlanarVelocityBinding",
+    "RateLimitedPlanarVelocityBinding",
+    "ScalableKeyboardPlanarVelocityBinding",
     "ObsSpace",
     "Perf",
     "PerfNode",

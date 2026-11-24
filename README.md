@@ -29,6 +29,15 @@ _Microduck locomotion policies trained with MotrixLab, rendered in MotrixRender 
 - [What's Inside](#-whats-inside)
 - [Contributing](#-contributing)
 - [Contact](#-contact)
+- [Agent-assisted RL Development Guide](#agent-assisted-rl-development-guide)
+
+## Agent-assisted RL Development Guide
+
+This repository also includes a general, simulator-independent workflow for using coding agents to develop reinforcement learning projects:
+
+- [Agent-assisted RL project development guidelines](docs/agent_rl_training_guidelines.md)
+
+The guide covers task contracts, hardware and throughput baselines, short-run candidate screening, checkpoint audits, experiment tracking, failure recovery, cross-environment validation, and high-risk deployment gates. It is intentionally independent of any specific robot, simulator, training framework, or deployment platform.
 
 ## What is MotrixLab?
 

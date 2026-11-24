@@ -23,6 +23,7 @@ from motrix_env_core.sim import (
     BodyPositionWrite,
     BodyRotationWrite,
     DofVelocityQuery,
+    GeomPositionQuery,
     GeomFrictionQuery,
     LinkCenterOfMassQuery,
     LinkMassQuery,
@@ -51,7 +52,7 @@ def _sim_data_queries(cfg: QuadrupedWalkEnvCfg):
     def resolve_sensor_name(name: str) -> str:
         return name if name in scene_sensor_names else robot.resolve_name(name)
 
-    return {
+    queries = {
         "joint_dof_pos": BodyJointPositionQuery(body=base_link_name),
         "joint_dof_vel": BodyJointVelocityQuery(body=base_link_name),
         "dof_vel": DofVelocityQuery(),
@@ -69,6 +70,13 @@ def _sim_data_queries(cfg: QuadrupedWalkEnvCfg):
         "RL_pos": SensorValuesQuery(sensors=(resolve_sensor_name(cfg.sensor.foot_positions[2]),)),
         "RR_pos": SensorValuesQuery(sensors=(resolve_sensor_name(cfg.sensor.foot_positions[3]),)),
     }
+    if isinstance(robot, QuadrupedRobotCfg):
+        foot_geom_names = robot.foot_contact_geom_names
+        for key, geom_name in zip(("FL_world_pos", "FR_world_pos", "RL_world_pos", "RR_world_pos"), foot_geom_names):
+            if geom_name is None:
+                raise ValueError("Quadruped walk requires a resolved foot contact geom name")
+            queries[key] = GeomPositionQuery(geom=geom_name)
+    return queries
 
 
 def _sim_model_queries(cfg: QuadrupedWalkEnvCfg):
@@ -86,8 +94,6 @@ _FOOTPRINT = np.array(
     [[dx, dy] for dx in (-0.25, 0.0, 0.25) for dy in (-0.15, 0.0, 0.15)],
     dtype=np.float32,
 )
-
-
 def _resolve_key_pose(
     robot: QuadrupedRobotCfg,
     actuators,
@@ -115,6 +121,39 @@ def _resolve_key_pose(
 
 class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
     """Base quadruped walk task driven by a :class:`QuadrupedRobotCfg`."""
+
+    # Keep the nominal posture constraints intact for standing and sagittal
+    # walking, while making them a soft constraint for lateral/yaw commands.
+    # These are implementation constants rather than user-facing reward
+    # hyperparameters: the command envelope is already part of the task
+    # contract and we do not want another tuning surface for this correction.
+    _POSTURE_GATE_START = 0.1
+    _POSTURE_GATE_END = 0.5
+    _POSTURE_GATE_FLOOR = 0.40
+
+    # The nominal joint pose is the handoff pose used by deployment.  Keep
+    # the existing weak regularizer during motion, but make the same term a
+    # strong standing-only reference so a zero-command policy cannot settle
+    # into a different balance posture after takeover.
+    _STANDING_SIMILAR_TO_DEFAULT_GAIN = 5.0
+
+    # Static-stance foot anchoring is deliberately kept as implementation
+    # policy rather than another public reward/configuration knob.  The
+    # deadband filters simulator/contact noise; beyond it, 5 mm corresponds
+    # to a small but meaningful penalty.  The rational barrier approaches the
+    # existing saturation value 4.0 without becoming flat at a finite error,
+    # so accumulated creep continues to receive a learning signal.
+    _STATIC_ANCHOR_DEADBAND = 0.001
+    _STATIC_ANCHOR_SATURATION_SCALE = 0.02
+
+    # Dynamic COM envelope used by the existing base_com_position term.  A
+    # moving quadruped needs a small forward COM shift to accelerate, but the
+    # allowed shift must remain bounded so the body cannot progressively
+    # pitch/translate ahead of the stance feet.
+    # Nominal dynamic-COM envelope used by the earlier regular recipe. Keep
+    # the default handoff COM as the target while allowing bounded motion.
+    _DYNAMIC_COM_FORWARD_ALLOWANCE = 0.02
+    _DYNAMIC_COM_BACKWARD_ALLOWANCE = 0.025
 
     def __init__(self, cfg: QuadrupedWalkEnvCfg, num_envs=1, backend: str | None = None):
         robot = cfg.scene.objs.robot
@@ -175,6 +214,8 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
             velocity_cfg.upper,
             rng=self._command_rng,
             standing_probability=velocity_cfg.standing_probability,
+            hard_case_probability=velocity_cfg.hard_case_probability,
+            hard_cases=velocity_cfg.hard_cases,
         )
         if not np.isfinite(velocity_cfg.standing_threshold) or velocity_cfg.standing_threshold < 0.0:
             raise ValueError(
@@ -196,6 +237,10 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
         self._init_base_pose = self.model.init_dof_pos[:7].copy()
         self._init_base_pose[:3] = np.asarray(cfg.initial_base_position, dtype=np.float32)
         self._init_joint_position = self.default_angles.copy()
+        self._hip_indices = np.asarray(
+            [index for index, actuator in enumerate(self.model.actuators) if "hip" in actuator.target_name],
+            dtype=np.int64,
+        )
 
         has_non_position_actuator = any(
             spec.actuator_type is not ActuatorType.POSITION for spec in self.model.actuators
@@ -225,17 +270,33 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
         self._randomize_writes = self.sim.write_compiler.compile(randomize_writes) if randomize_writes else None
 
         self.feet_contact = np.zeros((num_envs, self._num_feet), dtype=bool)
+        self._last_feet_contact = np.zeros((num_envs, self._num_feet), dtype=bool)
         self.feet_pos = np.zeros((num_envs, self._num_feet, 3), dtype=np.float32)
+        self._last_feet_pos = np.zeros_like(self.feet_pos)
+        self.feet_world_pos = np.zeros_like(self.feet_pos)
+        self._last_feet_world_pos = np.zeros_like(self.feet_world_pos)
+        self._static_anchor_pos = np.zeros((num_envs, self._num_feet, 2), dtype=np.float32)
+        self._static_anchor_valid = np.zeros((num_envs, self._num_feet), dtype=bool)
+        self._last_joint_vel = np.zeros((num_envs, self._num_action), dtype=np.float32)
+        self._default_feet_width: np.ndarray | None = None
+        self._default_base_com_forward_offset: float | None = None
 
         # Episode-scoped task state: full-batch buffers, reset writes the done
         # rows in place.
         self._commands = np.zeros((num_envs, 3), dtype=np.float32)
         self._command_resampling_time = np.full(num_envs, np.inf, dtype=np.float32)
+        self._command_control_steps = 0
         self._phase = np.zeros(num_envs, dtype=np.float32)
         self._feet_phase = np.zeros((num_envs, self._num_feet), dtype=np.float32)
+        self._gait_schedule_alpha = np.zeros(num_envs, dtype=np.float32)
+        self._gait_frequency = np.full(num_envs, float(cfg.gait_frequency), dtype=np.float32)
+        self._swing_fraction = np.full(
+            num_envs, float(cfg.reward_config.swing_fraction), dtype=np.float32
+        )
         self._current_actions = np.zeros((num_envs, self._num_action), dtype=np.float32)
         self._last_actions = np.zeros((num_envs, self._num_action), dtype=np.float32)
         self._action_delay_steps = np.zeros(num_envs, dtype=np.int32)
+        self._set_hard_case_probability(0)
 
     # ---- obs/action space plumbing ----------------------------------------
 
@@ -306,22 +367,64 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
     def _update_feet_buffers(self, env_ids: np.ndarray | None = None) -> None:
         contacts = self._read_feet_contact(env_ids)
         rows = slice(None) if env_ids is None else env_ids
+        self._last_feet_contact[rows, :] = self.feet_contact[rows, :]
         self.feet_contact[rows, :] = contacts[rows, :]
         for i, name in enumerate(self._feet_position_sensors):
             self.feet_pos[rows, i, :] = self.sim_data[name][rows]
+        for i, name in enumerate(("FL_world_pos", "FR_world_pos", "RL_world_pos", "RR_world_pos")):
+            self.feet_world_pos[rows, i, :] = self.sim_data[name][rows]
 
     def _advance_phase(self):
         commands = self._commands
+        if self.cfg.gait_schedule_enabled:
+            # Anchor the schedule to the measured forward gaits.  Lateral and
+            # yaw commands map to equivalent sagittal speeds so they do not
+            # remain trapped in the measured low-speed anchors.
+            speed = np.maximum(
+                np.maximum(
+                    np.abs(commands[:, 0]),
+                    float(self.cfg.gait_schedule_lateral_weight) * np.abs(commands[:, 1]),
+                ),
+                float(self.cfg.gait_schedule_yaw_weight) * np.abs(commands[:, 2]),
+            )
+            speed_low = float(self.cfg.gait_schedule_speed_low)
+            speed_high = float(self.cfg.gait_schedule_speed_high)
+            target_alpha = np.clip((speed - speed_low) / (speed_high - speed_low), 0.0, 1.0)
+            alpha_rate = self.cfg.ctrl_dt / float(self.cfg.gait_schedule_smoothing_time_s)
+            delta = target_alpha - self._gait_schedule_alpha
+            self._gait_schedule_alpha += np.sign(delta) * np.minimum(np.abs(delta), alpha_rate)
+            self._gait_frequency[:] = (
+                float(self.cfg.gait_schedule_frequency_low)
+                + self._gait_schedule_alpha
+                * (float(self.cfg.gait_schedule_frequency_high) - float(self.cfg.gait_schedule_frequency_low))
+            )
+            self._swing_fraction[:] = (
+                float(self.cfg.gait_schedule_swing_fraction_low)
+                + self._gait_schedule_alpha
+                * (
+                    float(self.cfg.gait_schedule_swing_fraction_high)
+                    - float(self.cfg.gait_schedule_swing_fraction_low)
+                )
+            )
+        else:
+            self._gait_schedule_alpha.fill(0.0)
+            self._gait_frequency.fill(float(self.cfg.gait_frequency))
+            self._swing_fraction.fill(float(self.cfg.reward_config.swing_fraction))
+        if np.any((self._swing_fraction <= 0.0) | (self._swing_fraction >= 1.0)):
+            raise ValueError("scheduled swing fraction must lie strictly inside (0, 1)")
+
         standing = np.linalg.norm(commands, axis=1) < self.cfg.commands.velocity.standing_threshold
         phase = self._phase
-        np.fmod(phase + self.cfg.ctrl_dt * self.cfg.gait_frequency, 1.0, out=phase)
+        np.fmod(phase + self.cfg.ctrl_dt * self._gait_frequency, 1.0, out=phase)
+        # Stand and walk share phase zero.  Advancing a hidden clock while the
+        # observed phase is masked makes the first moving observation jump to an
+        # arbitrary leg phase; freezing both keeps starts in full support.
         phase[standing] = 0.0
         feet_phase = self._feet_phase
         # Each trot pair swings together; pair ``n`` is offset by half a cycle
         # relative to pair ``n-1``.
         for pair_idx, (i, j) in enumerate(self.cfg.trot_pairs):
-            offset = 0.5 * pair_idx
-            value = (phase + offset) % 1.0
+            value = (phase + 0.5 * pair_idx) % 1.0
             feet_phase[:, i] = value
             feet_phase[:, j] = value
         feet_phase[standing] = 0.0
@@ -380,12 +483,20 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
 
     def compute_transition(self, state: ArrayEnvState) -> ArrayEnvState:
         self.sim_data.execute()
+        self._command_control_steps += 1
+        self._set_hard_case_probability(
+            self._command_control_steps
+            // self.cfg.commands.velocity.hard_case_curriculum_steps_per_iteration
+        )
         self._update_commands()
         self._advance_phase()
         self._update_feet_buffers()
 
         terminated = self.get_gravity()[:, 2] <= self.cfg.termination_min_up_z
         reward = self._compute_reward(state, self.get_local_linvel(), self.get_gyro(), self.get_dof_pos())
+        self._last_feet_pos[:] = self.feet_pos
+        self._last_feet_world_pos[:] = self.feet_world_pos
+        self._last_joint_vel[:] = self.get_dof_vel()
         return state.replace(reward=reward, terminated=terminated)
 
     def _compute_reward(
@@ -401,12 +512,20 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
             "base_height": self._reward_base_height,
             "action_rate": self._reward_action_rate,
             "similar_to_default": self._reward_similar_to_default,
+            "feet_spacing": self._reward_feet_spacing,
             "contact": self._reward_contact,
             "swing_feet_z": self._reward_swing_feet_z,
             "swing_contact": self._reward_swing_contact,
+            "touchdown_velocity": self._reward_touchdown_velocity,
+            "flat_orientation": self._reward_flat_orientation,
+            "dof_acc": self._reward_dof_acc,
+            "hip_position": self._reward_hip_position,
+            "base_com_position": self._reward_base_com_position,
         }
         reward_items = {}
         for name, reward_fn in reward_fns.items():
+            if name in reward_cfg.excluded_rewards:
+                continue
             scale = getattr(reward_cfg.scales, name)
             if scale == 0:
                 continue
@@ -420,6 +539,12 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
 
     def reset(self, env_ids: np.ndarray) -> None:
         num_reset = len(env_ids)
+        if self._default_feet_width is None and (
+            self.cfg.reward_config.scales.feet_spacing != 0.0
+            or self.cfg.reward_config.scales.base_com_position != 0.0
+        ):
+            self._capture_default_feet_width(env_ids)
+
         base_pose = np.tile(self._init_base_pose, (num_reset, 1))
         base_linear_velocity = np.zeros((num_reset, 3), dtype=np.float32)
         base_angular_velocity = np.zeros((num_reset, 3), dtype=np.float32)
@@ -447,14 +572,77 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
         self._randomize_params(env_ids)
 
         self.sim_data.execute(np.asarray(env_ids, dtype=np.int64))
+        self._last_feet_contact[env_ids] = False
+        self.feet_contact[env_ids] = False
+        self._static_anchor_valid[env_ids] = False
         self._update_feet_buffers(env_ids)
+        self._last_feet_pos[env_ids] = self.feet_pos[env_ids]
+        self._last_feet_world_pos[env_ids] = self.feet_world_pos[env_ids]
+        self._last_joint_vel[env_ids] = self.get_dof_vel()[env_ids]
 
         self._commands[env_ids] = self.resample_commands(num_reset)
         self._command_resampling_time[env_ids] = self._sample_command_resampling_time(num_reset)
         self._phase[env_ids] = 0.0
         self._feet_phase[env_ids] = 0.0
+        self._gait_schedule_alpha[env_ids] = 0.0
+        if self.cfg.gait_schedule_enabled:
+            self._gait_frequency[env_ids] = float(self.cfg.gait_schedule_frequency_low)
+            self._swing_fraction[env_ids] = float(self.cfg.gait_schedule_swing_fraction_low)
+        else:
+            self._gait_frequency[env_ids] = float(self.cfg.gait_frequency)
+            self._swing_fraction[env_ids] = float(self.cfg.reward_config.swing_fraction)
         self._current_actions[env_ids] = 0.0
         self._last_actions[env_ids] = 0.0
+
+    def _set_hard_case_probability(self, iteration: int) -> None:
+        """Apply the configured command curriculum for the current train step."""
+        velocity_cfg = self.cfg.commands.velocity
+        curriculum = velocity_cfg.hard_case_curriculum
+        if not curriculum:
+            probability = velocity_cfg.hard_case_probability
+        elif iteration <= curriculum[0][0]:
+            probability = curriculum[0][1]
+        elif iteration >= curriculum[-1][0]:
+            probability = curriculum[-1][1]
+        else:
+            probability = curriculum[-1][1]
+            for (left_iteration, left_probability), (right_iteration, right_probability) in zip(
+                curriculum, curriculum[1:]
+            ):
+                if left_iteration <= iteration <= right_iteration:
+                    fraction = (iteration - left_iteration) / (right_iteration - left_iteration)
+                    probability = left_probability + fraction * (right_probability - left_probability)
+                    break
+        self._velocity_command_binding.set_hard_case_probability(probability)
+
+    def _capture_default_feet_width(self, env_ids: np.ndarray) -> None:
+        """Read the nominal front and rear foot widths from the default pose."""
+        num_reset = len(env_ids)
+        base_pose = np.tile(self._init_base_pose, (num_reset, 1))
+        joint_position = np.tile(self._init_joint_position, (num_reset, 1))
+        joint_velocity = np.zeros((num_reset, self._reset_joint_velocity.shape[1]), dtype=np.float32)
+
+        self._reset_position[env_ids] = base_pose[:, :3]
+        self._reset_rotation[env_ids] = base_pose[:, 3:7]
+        self._reset_linear_velocity[env_ids] = 0.0
+        self._reset_angular_velocity[env_ids] = 0.0
+        self._reset_joint_position[env_ids] = joint_position
+        self._reset_joint_velocity[env_ids] = joint_velocity
+        self._reset_program.execute(env_ids)
+        self.sim_data.execute(np.asarray(env_ids, dtype=np.int64))
+        self._last_feet_contact[env_ids] = False
+        self.feet_contact[env_ids] = False
+        self._static_anchor_valid[env_ids] = False
+        self._update_feet_buffers(env_ids)
+        self._last_feet_world_pos[env_ids] = self.feet_world_pos[env_ids]
+
+        front_width = self.feet_pos[env_ids, 0, 1] - self.feet_pos[env_ids, 1, 1]
+        rear_width = self.feet_pos[env_ids, 2, 1] - self.feet_pos[env_ids, 3, 1]
+        self._default_feet_width = np.stack([front_width, rear_width], axis=1).mean(axis=0)
+        base_com_x = float(self.model.others["base_com"][0])
+        self._default_base_com_forward_offset = float(
+            np.mean(base_com_x - np.mean(self.feet_pos[env_ids, :, 0], axis=1))
+        )
 
     def resample_commands(self, num_envs: int) -> np.ndarray:
         return self._velocity_command_binding.read_command(batch_size=num_envs).values.copy()
@@ -553,9 +741,14 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
             program.buffer("damping")[env_ids] = self.model.others["actuator_kd"][None, :] * damping_scale
         if self._randomize_friction:
             friction = np.tile(self.model.others["ground_friction"], (num_reset, 1))
-            friction[:, 0] = rng.uniform(*self.cfg.randomization.sliding_friction_range, size=num_reset).astype(
-                np.float32
-            )
+            friction_low, friction_high = self.cfg.randomization.sliding_friction_range
+            # Keep the configured range unchanged while exposing the policy to
+            # the high-traction end more often.  The square-root transform
+            # raises the probability of mu >= 1.2 from about 25% to about 45%,
+            # targeting the forward/reverse failures seen in the audit without
+            # adding a new reward or randomization field.
+            friction_u = np.sqrt(rng.uniform(0.0, 1.0, size=num_reset))
+            friction[:, 0] = (friction_low + (friction_high - friction_low) * friction_u).astype(np.float32)
             program.buffer("friction")[env_ids, 0] = friction
         if self._randomize_base_mass:
             base_mass_scale = rng.uniform(*self.cfg.randomization.base_mass_scale_range, size=num_reset).astype(
@@ -572,9 +765,25 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
 
     def _reward_tracking_lin_vel(self, linvel, gyro, dof_pos) -> np.ndarray:
         del gyro, dof_pos
+        reward_cfg = self.cfg.reward_config
         commands = self._commands
-        error = np.sum(np.square(commands[:, :2] - linvel[:, :2]), axis=1)
-        return np.exp(-error / self.cfg.reward_config.tracking_lin_vel_sigma)
+        error = np.square(commands[:, :2] - linvel[:, :2])
+        sigma = np.full(
+            (self._num_envs, 2),
+            float(reward_cfg.tracking_lin_vel_sigma),
+            dtype=np.float32,
+        )
+        forward_sigma = reward_cfg.tracking_lin_vel_forward_sigma
+        if forward_sigma is not None:
+            sigma[:, 0] = np.where(
+                commands[:, 0] > 0.0,
+                float(forward_sigma),
+                float(reward_cfg.tracking_lin_vel_sigma),
+            )
+        lateral_sigma = reward_cfg.tracking_lin_vel_lateral_sigma
+        if lateral_sigma is not None:
+            sigma[:, 1] = float(lateral_sigma)
+        return np.exp(-np.sum(error / sigma, axis=1))
 
     def _reward_tracking_ang_vel(self, linvel, gyro, dof_pos) -> np.ndarray:
         del linvel, dof_pos
@@ -606,39 +815,248 @@ class QuadrupedWalkTask(DirectEnv[QuadrupedWalkEnvCfg]):
 
     def _reward_similar_to_default(self, linvel, gyro, dof_pos) -> np.ndarray:
         del linvel, gyro
-        return np.sum(np.abs(dof_pos - self.default_angles), axis=1)
+        error = np.sum(np.abs(dof_pos - self.default_angles), axis=1)
+        standing = np.linalg.norm(self._commands, axis=1) < self.cfg.commands.velocity.standing_threshold
+        gain = 1.0 + (self._STANDING_SIMILAR_TO_DEFAULT_GAIN - 1.0) * standing
+        return error * gain
+
+    def _posture_constraint_scale(self) -> np.ndarray:
+        """Scale posture constraints down only for lateral/yaw commands.
+
+        Standing and pure forward/backward commands retain full strength.  A
+        smooth minimum of the lateral and yaw command magnitudes transitions
+        the scale from 1.0 to a non-zero floor, so the constraints remain
+        stabilizing during sidestepping and turning without dictating their
+        nominal leg geometry.
+        """
+        activity = np.maximum(np.abs(self._commands[:, 1]), np.abs(self._commands[:, 2]))
+        progress = np.clip(
+            (activity - self._POSTURE_GATE_START)
+            / (self._POSTURE_GATE_END - self._POSTURE_GATE_START),
+            0.0,
+            1.0,
+        )
+        smooth = np.square(progress) * (3.0 - 2.0 * progress)
+        return 1.0 - (1.0 - self._POSTURE_GATE_FLOOR) * smooth
+
+    def _reward_feet_spacing(self, linvel, gyro, dof_pos) -> np.ndarray:
+        del linvel, gyro, dof_pos
+        if self._default_feet_width is None:
+            return np.zeros((self._num_envs,), dtype=np.float32)
+
+        front_width = self.feet_pos[:, 0, 1] - self.feet_pos[:, 1, 1]
+        rear_width = self.feet_pos[:, 2, 1] - self.feet_pos[:, 3, 1]
+        target_width = np.asarray(self._default_feet_width, dtype=np.float32)
+        reward_cfg = self.cfg.reward_config
+        pair_widths = np.stack([front_width, rear_width], axis=1)
+        errors = np.abs(pair_widths - target_width)
+        excess = np.maximum(errors - reward_cfg.feet_spacing_tolerance, 0.0)
+        pair_rewards = np.exp(-np.square(excess / reward_cfg.feet_spacing_sigma))
+        return np.mean(pair_rewards, axis=1) * self._posture_constraint_scale()
 
     def _reward_swing_feet_z(self, linvel, gyro, dof_pos) -> np.ndarray:
         del linvel, gyro, dof_pos
         feet_phase = self._feet_phase
         contacts = self.feet_contact
-        valid_swing = (feet_phase >= 0.6) & ~contacts
         reward_cfg = self.cfg.reward_config
         # feet_pos is body-relative (framepos with ref=imu). The foot lifts
-        # `target_height` above its stance position, so the body-frame target is
-        # target_height - base_height_target (e.g. 0.1 - 0.3 = -0.2). This keeps
-        # the reward invariant to the body's world-frame vertical motion.
-        target_z = reward_cfg.target_foot_height - reward_cfg.base_height_target
+        # `target_height` above its stance position. Convert that world-frame
+        # lift into the sensor frame using the configured base-to-sensor offset.
+        swing_fraction = self._swing_fraction[:, None]
+        swing_start = 1.0 - swing_fraction
+        valid_swing = (feet_phase >= swing_start) & ~contacts
+        sensor_ground_z = -reward_cfg.base_height_target - reward_cfg.foot_height_reference_offset
+        target_z = sensor_ground_z + reward_cfg.target_foot_height
+        if reward_cfg.swing_feet_z_sinusoidal:
+            # Shape the vertical trajectory instead of holding the peak for the
+            # entire swing.  The final part of the gait cycle is swing, so map
+            # it to a smooth lift-and-place arc.  Rise and plateau fractions are
+            # normalized by swing duration and make velocity zero at endpoints.
+            swing_progress = np.clip((feet_phase - swing_start) / swing_fraction, 0.0, 1.0)
+            rise_fraction = float(reward_cfg.swing_rise_fraction)
+            plateau_fraction = float(reward_cfg.swing_plateau_fraction)
+            if not 0.0 < rise_fraction < 1.0 or plateau_fraction < 0.0 or rise_fraction + plateau_fraction >= 1.0:
+                raise ValueError("swing rise and plateau fractions must lie strictly inside the swing phase")
+            plateau_start = rise_fraction
+            descent_start = rise_fraction + plateau_fraction
+            target_profile = np.empty_like(swing_progress)
+            rising = swing_progress < plateau_start
+            plateauing = (swing_progress >= plateau_start) & (swing_progress < descent_start)
+            descending = swing_progress >= descent_start
+            target_profile[rising] = 0.5 * (1.0 - np.cos(np.pi * swing_progress[rising] / rise_fraction))
+            target_profile[plateauing] = 1.0
+            descent_progress = (swing_progress[descending] - descent_start) / (1.0 - descent_start)
+            target_profile[descending] = 0.5 * (1.0 + np.cos(np.pi * descent_progress))
+            target_z = sensor_ground_z + reward_cfg.target_foot_height * target_profile
         height_error = np.square(self.feet_pos[:, :, 2] - target_z)
         sigma_sq = reward_cfg.swing_feet_height_sigma**2
         swing_rew = np.exp(-height_error / sigma_sq) * valid_swing
         return np.sum(swing_rew, axis=1) / self._num_feet
+
+    def _reward_touchdown_velocity(self, linvel, gyro, dof_pos) -> np.ndarray:
+        del linvel, gyro, dof_pos
+        reward_cfg = self.cfg.reward_config
+        current_height = self.feet_pos[:, :, 2]
+        previous_height = self._last_feet_pos[:, :, 2]
+        vertical_speed = (current_height - previous_height) / max(float(self.cfg.ctrl_dt), 1e-6)
+        sensor_ground_z = (
+            reward_cfg.touchdown_height_threshold
+            - reward_cfg.base_height_target
+            - reward_cfg.foot_height_reference_offset
+        )
+        near_ground = (current_height < sensor_ground_z) & (vertical_speed < 0.0)
+        normalized_speed = np.minimum(
+            np.abs(vertical_speed) / reward_cfg.touchdown_speed_sigma,
+            reward_cfg.touchdown_speed_clip,
+        )
+        return np.mean(np.square(normalized_speed) * near_ground, axis=1)
 
     def _reward_contact(self, linvel, gyro, dof_pos) -> np.ndarray:
         del linvel, gyro, dof_pos
         res = np.zeros((self._num_envs,), dtype=np.float32)
         feet_phase = self._feet_phase
         contacts = self.feet_contact
+        swing_start = 1.0 - self._swing_fraction
         for i in range(self._num_feet):
-            target_contact = feet_phase[:, i] < 0.6
+            target_contact = feet_phase[:, i] < swing_start
             res += (contacts[:, i] == target_contact).astype(np.float32)
         return res / self._num_feet
 
     def _reward_swing_contact(self, linvel, gyro, dof_pos) -> np.ndarray:
-        del linvel, gyro, dof_pos
-        is_swing = self._feet_phase >= 0.6
-        swing_contacts = self.feet_contact & is_swing
-        return np.sum(swing_contacts, axis=1) / self._num_feet
+        """Penalize contact most strongly during the middle of swing.
 
+        Brief contact at lift-off and touchdown is a normal transition in a
+        discrete-time simulator.  Weighting the interior of swing more
+        strongly targets sustained dragging without adding another tuning
+        parameter or changing the average penalty for a foot that remains in
+        contact throughout swing.
+        """
+        del linvel, gyro, dof_pos
+        swing_fraction = self._swing_fraction[:, None]
+        swing_start = 1.0 - swing_fraction
+        is_swing = self._feet_phase >= swing_start
+        swing_progress = np.clip(
+            (self._feet_phase - swing_start) / swing_fraction,
+            0.0,
+            1.0,
+        )
+        phase_weight = 2.0 * np.square(np.sin(np.pi * swing_progress))
+        swing_contacts = self.feet_contact & is_swing
+        weighted_contacts = swing_contacts.astype(np.float32) * phase_weight
+
+        # Once a foot has remained in contact for two consecutive control
+        # ticks, its horizontal displacement is ground slip rather than a
+        # touchdown transition.  Keep the existing linear velocity penalty
+        # for moving commands; static commands use the position anchor below
+        # so slow creep cannot accumulate for free.
+        consecutive_stance = self.feet_contact & self._last_feet_contact & ~is_swing
+        horizontal_displacement = np.linalg.norm(
+            self.feet_world_pos[:, :, :2] - self._last_feet_world_pos[:, :, :2], axis=2
+        )
+        horizontal_speed = horizontal_displacement / max(float(self.cfg.ctrl_dt), 1e-6)
+        standing = np.linalg.norm(self._commands, axis=1) < self.cfg.commands.velocity.standing_threshold
+        stance_motion = np.minimum(6.0 * horizontal_speed, 4.0) * consecutive_stance
+
+        # In static stance, latch the world-frame contact point once contact
+        # is confirmed for two consecutive ticks.  The latch is released on
+        # command motion or liftoff, so it cannot constrain walking, turning,
+        # or a normal swing/landing transition.
+        static_stance = consecutive_stance & standing[:, None]
+        self._static_anchor_valid &= standing[:, None] & self.feet_contact
+        new_anchors = static_stance & ~self._static_anchor_valid
+        self._static_anchor_pos[new_anchors] = self.feet_world_pos[:, :, :2][new_anchors]
+        self._static_anchor_valid[new_anchors] = True
+        anchor_error = np.linalg.norm(
+            self.feet_world_pos[:, :, :2] - self._static_anchor_pos,
+            axis=2,
+        )
+        anchor_excess = np.maximum(anchor_error - self._STATIC_ANCHOR_DEADBAND, 0.0)
+        anchor_penalty = 4.0 * anchor_excess / (
+            anchor_excess + self._STATIC_ANCHOR_SATURATION_SCALE
+        )
+        anchor_motion = (
+            anchor_penalty
+            * self._static_anchor_valid
+            * standing[:, None]
+            * self.feet_contact
+        )
+        stance_motion = np.maximum(stance_motion, anchor_motion)
+        raw_penalty = np.sum(weighted_contacts + stance_motion, axis=1) / self._num_feet
+        forward_scale = self.cfg.reward_config.swing_contact_forward_scale
+        if forward_scale is None:
+            return raw_penalty
+        # The low-damping policy can evade speed tracking by keeping feet on
+        # the ground and dragging.  Low-speed forward gait is especially prone
+        # to that shortcut, so ramp this existing penalty with forward command
+        # magnitude only.  Reverse, lateral, yaw, and standing commands retain
+        # the nominal scale until they receive dedicated diagnostic evidence.
+        direction_scale = 1.0 + (float(forward_scale) - 1.0) * np.clip(
+            self._commands[:, 0], 0.0, 1.0
+        )
+        return raw_penalty * direction_scale
+
+    def _reward_flat_orientation(self, linvel, gyro, dof_pos) -> np.ndarray:
+        """Penalize roll/pitch tilt while leaving yaw unconstrained."""
+        del linvel, gyro, dof_pos
+        upvector = self.get_gravity()
+        return np.sum(np.square(upvector[:, :2]), axis=1)
+
+    def _reward_dof_acc(self, linvel, gyro, dof_pos) -> np.ndarray:
+        """Penalize the largest joint acceleration estimated from velocity changes."""
+        del linvel, gyro, dof_pos
+        joint_vel = self.get_dof_vel()
+        acceleration = (joint_vel - self._last_joint_vel) / max(float(self.cfg.ctrl_dt), 1e-6)
+        return np.max(np.square(acceleration), axis=1)
+
+    def _reward_hip_position(self, linvel, gyro, dof_pos) -> np.ndarray:
+        del linvel, gyro
+        if self._hip_indices.size == 0:
+            return np.zeros((self._num_envs,), dtype=np.float32)
+
+        reward_cfg = self.cfg.reward_config
+        hip_error = np.abs(dof_pos[:, self._hip_indices] - self.default_angles[self._hip_indices])
+        excess = np.maximum(hip_error - reward_cfg.hip_position_tolerance, 0.0)
+        normalized = np.minimum(excess / reward_cfg.hip_position_sigma, 3.0)
+        return np.mean(np.square(normalized), axis=1) * self._posture_constraint_scale()
+
+    def _reward_base_com_position(self, linvel, gyro, dof_pos) -> np.ndarray:
+        """Keep COM inside the standing or motion-specific envelope.
+
+        Zero command retains the nominal handoff posture.  During motion the
+        target remains the nominal handoff COM relative to the mean of all
+        four feet, with a bounded command-dependent envelope.
+        """
+        del linvel, gyro, dof_pos
+        reward_cfg = self.cfg.reward_config
+        if self._default_base_com_forward_offset is None:
+            return np.zeros((self._num_envs,), dtype=np.float32)
+
+        base_com_x = float(self.model.others["base_com"][0])
+        # Keep the training reference identical to the audit metric:
+        # COM x relative to the mean x of all four feet.  Using only the
+        # currently contacting feet makes the reference jump every half gait
+        # cycle and lets the policy evade the dynamic COM constraint while
+        # still showing a large measured forward extension.
+        all_feet_center = np.mean(self.feet_pos[:, :, 0], axis=1)
+        current_offset = base_com_x - all_feet_center
+
+        commands = self._commands
+        standing = np.linalg.norm(commands, axis=1) < self.cfg.commands.velocity.standing_threshold
+        forward_speed = np.clip(commands[:, 0], 0.0, 1.0)
+        backward_speed = np.clip(-commands[:, 0], 0.0, 1.0)
+        upper_allowance = self._DYNAMIC_COM_FORWARD_ALLOWANCE * forward_speed
+        lower_allowance = self._DYNAMIC_COM_BACKWARD_ALLOWANCE * backward_speed
+        target = self._default_base_com_forward_offset
+        upper = target + upper_allowance
+        lower = target - lower_allowance
+        excess = np.maximum(np.maximum(current_offset - upper, lower - current_offset), 0.0)
+        # Standing remains a symmetric nominal-position constraint; movement
+        # uses the one-sided dynamic envelope above.
+        standing_error = np.abs(current_offset - self._default_base_com_forward_offset)
+        excess = np.where(standing, standing_error, excess)
+        excess = np.maximum(excess - reward_cfg.base_com_position_tolerance, 0.0)
+        normalized = excess / reward_cfg.base_com_position_sigma
+        dynamic_scale = self._posture_constraint_scale()
+        return np.square(normalized) * np.where(standing, 1.0, dynamic_scale)
 
 __all__ = ["QuadrupedWalkTask"]

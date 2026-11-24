@@ -80,6 +80,126 @@ def test_quadruped_reward_scales_are_structured_and_not_shared():
     assert go1 is not go2
 
 
+def test_go2_uses_locomotion_first_reward_set():
+    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env.init_state()
+    env.step(np.zeros((env.num_envs, *env.action_space.shape), dtype=np.float32))
+
+    assert "similar_to_default" in env.state.reward_terms
+    assert "dof_acc" in env.state.reward_terms
+    assert "hip_position" in env.state.reward_terms
+    assert "base_com_position" in env.state.reward_terms
+
+    baseline = registry.make("go1-walk-flat", num_envs=1, mode="train")
+    baseline.init_state()
+    baseline.step(np.zeros((baseline.num_envs, *baseline.action_space.shape), dtype=np.float32))
+
+    assert "similar_to_default" in baseline.state.reward_terms
+    assert "dof_acc" not in baseline.state.reward_terms
+    assert "hip_position" not in baseline.state.reward_terms
+
+
+def test_go2_velocity_command_range_matches_supported_envelope():
+    velocity_cfg = registry.make_env_config("go2-walk-flat").commands.velocity
+
+    np.testing.assert_allclose(velocity_cfg.lower, np.array([-1.0, -0.5, -1.0], dtype=np.float32))
+    np.testing.assert_allclose(velocity_cfg.upper, np.array([1.0, 0.5, 1.0], dtype=np.float32))
+
+
+def test_go2_posture_constraints_use_tighter_tolerances_and_more_standing():
+    env_cfg = registry.make_env_config("go2-walk-flat")
+
+    assert env_cfg.commands.velocity.standing_probability == pytest.approx(0.50)
+    assert env_cfg.commands.velocity.hard_case_probability == pytest.approx(0.20)
+    assert len(env_cfg.commands.velocity.hard_cases) == 24
+    hard_cases = {tuple(case) for case in env_cfg.commands.velocity.hard_cases}
+    assert all((-case[0], case[1], case[2]) in hard_cases for case in hard_cases)
+    assert env_cfg.reward_config.feet_spacing_tolerance == pytest.approx(0.03)
+    assert env_cfg.reward_config.scales.flat_orientation == pytest.approx(-4.0)
+    # Raised from -0.3 to damp rapid roll/pitch oscillation without changing
+    # the flat-body target or any tracking/gait reward.
+    assert env_cfg.reward_config.scales.ang_vel_xy == pytest.approx(-0.5)
+    assert env_cfg.reward_config.scales.dof_acc == pytest.approx(-2e-5)
+    assert env_cfg.reward_config.scales.base_com_position == pytest.approx(-0.5)
+    assert env_cfg.reward_config.base_com_position_tolerance == pytest.approx(0.02)
+    assert env_cfg.reward_config.hip_position_tolerance == pytest.approx(0.08)
+    assert env_cfg.reward_config.base_height_target == pytest.approx(0.305)
+    # Raised from -100 to reduce base-height oscillation without changing the
+    # target or any gait/tracking reward.
+    assert env_cfg.reward_config.scales.base_height == pytest.approx(-300.0)
+    assert env_cfg.reward_config.swing_fraction == pytest.approx(0.45)
+    assert env_cfg.reward_config.swing_feet_height_sigma == pytest.approx(0.05)
+    assert env_cfg.randomization.sliding_friction_range == (0.6, 1.4)
+    # Raised from 5.0 in the low-speed dragging intervention while keeping
+    # target height and all other gait rewards unchanged.
+    assert env_cfg.reward_config.scales.swing_feet_z == pytest.approx(6.0)
+    assert env_cfg.reward_config.scales.swing_contact == pytest.approx(-1.5)
+    assert env_cfg.reward_config.scales.touchdown_velocity == pytest.approx(-0.8)
+    assert env_cfg.reward_config.touchdown_speed_sigma == pytest.approx(0.35)
+    assert env_cfg.reward_config.tracking_lin_vel_sigma == pytest.approx(0.35)
+    assert env_cfg.reward_config.tracking_lin_vel_forward_sigma == pytest.approx(0.16)
+    assert env_cfg.reward_config.tracking_lin_vel_lateral_sigma == pytest.approx(0.25)
+    assert env_cfg.reward_config.swing_contact_forward_scale == pytest.approx(1.5)
+
+
+def test_tracking_lin_vel_reward_applies_directional_tracking_sigmas():
+    env = registry.make("go2-walk-flat", num_envs=3, mode="train")
+    env.init_state()
+    env._commands[:] = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.5, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    linvel = np.zeros((env.num_envs, 3), dtype=np.float32)
+
+    reward = env._reward_tracking_lin_vel(linvel, None, None)
+
+    np.testing.assert_allclose(
+        reward,
+        np.array(
+            [
+                np.exp(-1.0 / 0.16),
+                np.exp(-1.0 / 0.35),
+                np.exp(-0.25 / 0.25),
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_go2_hip_position_reward_only_penalizes_excess_abduction():
+    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env.init_state()
+
+    assert env._hip_indices.size == 4
+    dof_pos = np.broadcast_to(env.default_angles, (1, env._num_action)).copy()
+    within_tolerance = env._reward_hip_position(None, None, dof_pos)
+    dof_pos[0, env._hip_indices[0]] += env.cfg.reward_config.hip_position_tolerance
+    at_tolerance = env._reward_hip_position(None, None, dof_pos)
+    dof_pos[0, env._hip_indices[0]] += env.cfg.reward_config.hip_position_sigma
+    excessive = env._reward_hip_position(None, None, dof_pos)
+
+    np.testing.assert_allclose(within_tolerance, 0.0)
+    np.testing.assert_allclose(at_tolerance, 0.0)
+    assert excessive[0] > 0.0
+
+
+def test_go2_dof_acc_reward_uses_worst_joint_acceleration(quadruped_env):
+    env = quadruped_env
+    env._last_joint_vel[:] = 0.0
+    joint_vel = np.zeros_like(env._last_joint_vel)
+    joint_vel[0, 0] = env.cfg.ctrl_dt
+    joint_vel[0, 1] = 2.0 * env.cfg.ctrl_dt
+    env.get_dof_vel = lambda: joint_vel
+
+    penalty = env._reward_dof_acc(None, None, None)
+
+    np.testing.assert_allclose(penalty, [4.0])
+
+
 def test_go2_velocity_commands_remain_constant_before_resampling_interval():
     np.random.seed(7)
     env = registry.make("go2-walk-flat", num_envs=64, mode="train")
@@ -95,6 +215,24 @@ def test_go2_velocity_commands_remain_constant_before_resampling_interval():
     env.step(np.zeros((env.num_envs, *env.action_space.shape), dtype=np.float32))
 
     np.testing.assert_array_equal(env._commands, commands)
+
+
+def test_go2_hard_case_curriculum_interpolates_by_training_iteration():
+    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    binding = env._velocity_command_binding
+    assert binding.hard_case_probability == pytest.approx(0.0)
+    env._set_hard_case_probability(600)
+    assert binding.hard_case_probability == pytest.approx(0.05)
+    env._set_hard_case_probability(1000)
+    assert binding.hard_case_probability == pytest.approx(0.15)
+    env._set_hard_case_probability(1500)
+    assert binding.hard_case_probability == pytest.approx(0.20)
+
+
+def test_go2_play_disables_hard_case_curriculum():
+    env = registry.make("go2-walk-flat", num_envs=1, mode="play")
+    assert env.cfg.commands.velocity.hard_case_curriculum == ()
+    assert env._velocity_command_binding.hard_case_probability == pytest.approx(0.0)
 
 
 def test_go2_randomization_is_enabled_for_training_and_disabled_for_play():
@@ -341,17 +479,37 @@ def test_quadruped_randomization_config_rejects_invalid_ranges(update, message):
         cfg.validate()
 
 
-def test_zero_velocity_command_freezes_gait_phase():
+def test_gait_schedule_and_stand_transition_are_continuous():
     env = registry.make("go2-walk-flat", num_envs=2, mode="train")
     env.init_state()
-    env._commands[:] = 0.0
-    env._phase[:] = 0.5
-    env._feet_phase[:] = 0.5
+    cfg = env.cfg
+    env._commands[:] = np.array([0.8, 0.0, 0.0], dtype=np.float32)
+    env._gait_schedule_alpha[:] = 0.0
 
     env._advance_phase()
 
-    np.testing.assert_array_equal(env._phase, np.zeros(2, dtype=np.float32))
+    max_alpha_step = cfg.ctrl_dt / cfg.gait_schedule_smoothing_time_s
+    assert env._gait_schedule_alpha[0] == pytest.approx(max_alpha_step)
+    assert env._gait_frequency[0] < cfg.gait_schedule_frequency_high
+    assert env._swing_fraction[0] < cfg.gait_schedule_swing_fraction_high
+
+    env._commands[:] = 0.0
+    env._phase[:] = 0.5
+    env._feet_phase[:] = 0.5
+    env._advance_phase()
+
+    # Stand and walk share phase zero.  Advancing a hidden clock while the
+    # observed phase is masked would make startup jump to an arbitrary swing.
     np.testing.assert_array_equal(env._feet_phase, np.zeros((2, env._num_feet), dtype=np.float32))
+    np.testing.assert_array_equal(env._phase, np.zeros(2, dtype=np.float32))
+
+    env._commands[:] = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    env._advance_phase()
+    assert env._gait_frequency[0] > cfg.gait_schedule_frequency_low
+
+    env._commands[:] = np.array([0.0, 0.5, 0.0], dtype=np.float32)
+    env._advance_phase()
+    assert env._gait_frequency[0] > cfg.gait_schedule_frequency_low
 
 
 @pytest.mark.parametrize(
@@ -480,7 +638,11 @@ def test_walk_task_selects_named_robot_key_pose():
 
 def test_swing_height_reward_requires_feet_to_leave_ground(quadruped_env):
     reward_cfg = quadruped_env.cfg.reward_config
-    quadruped_env.feet_pos[:, :, 2] = reward_cfg.target_foot_height - reward_cfg.base_height_target
+    quadruped_env.feet_pos[:, :, 2] = (
+        reward_cfg.target_foot_height
+        - reward_cfg.base_height_target
+        - reward_cfg.foot_height_reference_offset
+    )
 
     reward = _swing_reward(
         quadruped_env,
@@ -492,7 +654,11 @@ def test_swing_height_reward_requires_feet_to_leave_ground(quadruped_env):
 
 def test_swing_height_reward_prefers_target_height(quadruped_env):
     reward_cfg = quadruped_env.cfg.reward_config
-    target_z = reward_cfg.target_foot_height - reward_cfg.base_height_target
+    target_z = (
+        reward_cfg.target_foot_height
+        - reward_cfg.base_height_target
+        - reward_cfg.foot_height_reference_offset
+    )
     no_contacts = np.zeros((1, quadruped_env._num_feet), dtype=bool)
 
     quadruped_env.feet_pos[:, :, 2] = target_z
@@ -506,19 +672,263 @@ def test_swing_height_reward_prefers_target_height(quadruped_env):
     assert np.all(off_target_reward > 0.0)
 
 
+def test_go2_swing_height_reward_uses_lift_plateau_and_slow_place_profile():
+    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env.init_state()
+    env.cfg.reward_config.swing_feet_z_sinusoidal = True
+    env._swing_fraction[:] = env.cfg.reward_config.swing_fraction
+    no_contacts = np.zeros((1, env._num_feet), dtype=bool)
+    ground_z = (
+        -env.cfg.reward_config.base_height_target
+        - env.cfg.reward_config.foot_height_reference_offset
+    )
+    peak_z = ground_z + env.cfg.reward_config.target_foot_height
+    rewards = {}
+
+    rise_fraction = env.cfg.reward_config.swing_rise_fraction
+    plateau_fraction = env.cfg.reward_config.swing_plateau_fraction
+    swing_start = 1.0 - env.cfg.reward_config.swing_fraction
+    swing_duration = env.cfg.reward_config.swing_fraction
+    plateau_phase = swing_start + swing_duration * (rise_fraction + 0.5 * plateau_fraction)
+    for phase, foot_z in ((swing_start, ground_z), (plateau_phase, peak_z), (1.0, ground_z)):
+        env._feet_phase[:] = phase
+        env.feet_contact[:] = no_contacts
+        env.feet_pos[:, :, 2] = foot_z
+        rewards[phase] = env._reward_swing_feet_z(None, None, None)[0]
+
+    assert env.cfg.reward_config.swing_feet_z_sinusoidal is True
+    np.testing.assert_allclose(rewards[swing_start], 1.0)
+    np.testing.assert_allclose(rewards[plateau_phase], 1.0)
+    np.testing.assert_allclose(rewards[1.0], 1.0)
+
+    env.feet_pos[:, :, 2] = peak_z
+    end_off_profile = env._reward_swing_feet_z(None, None, None)[0]
+    assert end_off_profile < rewards[1.0]
+
+
+def test_go2_touchdown_velocity_penalty_only_applies_to_low_descending_feet():
+    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env.init_state()
+    reward_cfg = env.cfg.reward_config
+    sensor_ground_z = (
+        -reward_cfg.base_height_target
+        - reward_cfg.foot_height_reference_offset
+    )
+
+    env._last_feet_pos[:, :, 2] = sensor_ground_z
+    env.feet_pos[:, :, 2] = sensor_ground_z - 0.01
+    low_fast_touchdown = env._reward_touchdown_velocity(None, None, None)
+
+    env.feet_pos[:, :, 2] = sensor_ground_z - 0.001
+    low_slow_touchdown = env._reward_touchdown_velocity(None, None, None)
+
+    env._last_feet_pos[:, :, 2] = sensor_ground_z + reward_cfg.target_foot_height
+    env.feet_pos[:, :, 2] = (
+        sensor_ground_z + reward_cfg.target_foot_height - 0.01
+    )
+    high_start_touchdown = env._reward_touchdown_velocity(None, None, None)
+
+    env._last_feet_pos[:, :, 2] = sensor_ground_z
+    env.feet_pos[:, :, 2] = sensor_ground_z + 0.01
+    low_liftoff = env._reward_touchdown_velocity(None, None, None)
+
+    assert low_slow_touchdown[0] > 0.0
+    assert low_fast_touchdown[0] > low_slow_touchdown[0]
+    np.testing.assert_allclose(high_start_touchdown, np.zeros((1,), dtype=np.float32))
+    np.testing.assert_allclose(low_liftoff, np.zeros((1,), dtype=np.float32))
+
+
 def test_swing_contact_penalty_detects_dragging_feet(quadruped_env):
     feet_phase = np.full((1, quadruped_env._num_feet), 0.75, dtype=np.float32)
     no_contacts = np.zeros((1, quadruped_env._num_feet), dtype=bool)
     all_contacts = np.ones((1, quadruped_env._num_feet), dtype=bool)
 
     quadruped_env._feet_phase[:] = feet_phase
+    quadruped_env._last_feet_contact[:] = no_contacts
     quadruped_env.feet_contact[:] = no_contacts
     no_drag = quadruped_env._reward_swing_contact(None, None, None)
     quadruped_env.feet_contact[:] = all_contacts
     all_drag = quadruped_env._reward_swing_contact(None, None, None)
 
     np.testing.assert_array_equal(no_drag, np.zeros((1,), dtype=np.float32))
-    np.testing.assert_array_equal(all_drag, np.ones((1,), dtype=np.float32))
+    progress = (
+        0.75 - (1.0 - quadruped_env.cfg.reward_config.swing_fraction)
+    ) / quadruped_env.cfg.reward_config.swing_fraction
+    expected = 2.0 * np.square(np.sin(np.pi * progress))
+    np.testing.assert_allclose(all_drag, np.asarray([expected], dtype=np.float32))
+
+    quadruped_env._feet_phase[:] = 1.0 - quadruped_env.cfg.reward_config.swing_fraction
+    np.testing.assert_allclose(
+        quadruped_env._reward_swing_contact(None, None, None),
+        np.zeros((1,), dtype=np.float32),
+    )
+
+    # Consecutive stance contact is penalized by horizontal foot motion, while
+    # a first contact tick is excluded as a touchdown transition.
+    quadruped_env._commands[:] = np.asarray([[0.5, 0.0, 0.0]], dtype=np.float32)
+    quadruped_env._feet_phase[:] = 0.0
+    quadruped_env._last_feet_contact[:] = all_contacts
+    quadruped_env.feet_contact[:] = all_contacts
+    quadruped_env._last_feet_world_pos[:] = quadruped_env.feet_world_pos
+    quadruped_env.feet_world_pos[:, :, 0] += 0.001
+    stance_motion = quadruped_env._reward_swing_contact(None, None, None)
+    np.testing.assert_allclose(stance_motion, np.asarray([0.3], dtype=np.float32), rtol=1e-5)
+
+    quadruped_env._last_feet_contact[:] = no_contacts
+    np.testing.assert_allclose(
+        quadruped_env._reward_swing_contact(None, None, None),
+        np.zeros((1,), dtype=np.float32),
+    )
+
+
+def test_swing_contact_penalty_scales_with_forward_command(quadruped_env):
+    quadruped_env.cfg.reward_config.swing_contact_forward_scale = 1.5
+    quadruped_env._feet_phase[:] = 0.75
+    quadruped_env.feet_contact[:] = True
+    quadruped_env._last_feet_contact[:] = False
+
+    commands = (
+        (-0.5, 0.0, 0.0),
+        (0.5, 0.0, 0.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 0.5, 0.0),
+        (0.0, 0.0, -1.0),
+    )
+    penalties = []
+    for command in commands:
+        quadruped_env._commands[:] = np.asarray([command], dtype=np.float32)
+        penalties.append(quadruped_env._reward_swing_contact(None, None, None)[0])
+
+    reverse, half_forward, full_forward, lateral, yaw = penalties
+    nominal = full_forward / 1.5
+    np.testing.assert_allclose(reverse, nominal)
+    np.testing.assert_allclose(half_forward, 1.25 * nominal)
+    np.testing.assert_allclose(lateral, nominal)
+    np.testing.assert_allclose(yaw, nominal)
+    assert full_forward > half_forward > nominal
+
+
+
+def test_static_stance_anchors_contact_points_without_affecting_motion(quadruped_env):
+    all_contacts = np.ones((1, quadruped_env._num_feet), dtype=bool)
+    quadruped_env._commands[:] = 0.0
+    quadruped_env._feet_phase[:] = 0.0
+    quadruped_env._last_feet_contact[:] = all_contacts
+    quadruped_env.feet_contact[:] = all_contacts
+    quadruped_env._static_anchor_valid[:] = False
+    quadruped_env._last_feet_world_pos[:] = quadruped_env.feet_world_pos
+
+    first = quadruped_env._reward_swing_contact(None, None, None)
+    np.testing.assert_allclose(first, np.zeros((1,), dtype=np.float32))
+    assert np.all(quadruped_env._static_anchor_valid)
+
+    # Move all feet by 6 mm without a one-step velocity contribution.  The
+    # static anchor still sees the accumulated position error and penalizes it.
+    quadruped_env.feet_world_pos[:, :, 0] += 0.006
+    quadruped_env._last_feet_world_pos[:] = quadruped_env.feet_world_pos
+    anchored = quadruped_env._reward_swing_contact(None, None, None)
+    np.testing.assert_allclose(anchored, np.asarray([0.8], dtype=np.float32), rtol=1e-5)
+
+    # The bounded barrier keeps increasing for large accumulated drift rather
+    # than becoming exactly flat after a finite clipping threshold.
+    quadruped_env.feet_world_pos[:, :, 0] += 0.054
+    quadruped_env._last_feet_world_pos[:] = quadruped_env.feet_world_pos
+    larger_drift = quadruped_env._reward_swing_contact(None, None, None)
+    assert larger_drift[0] > anchored[0]
+    assert larger_drift[0] < 4.0
+
+    # A moving command releases the anchor and leaves the walking penalty path
+    # active, so the position latch cannot constrain normal gait motion.
+    quadruped_env._commands[:] = np.asarray([[0.5, 0.0, 0.0]], dtype=np.float32)
+    quadruped_env._reward_swing_contact(None, None, None)
+    assert not np.any(quadruped_env._static_anchor_valid)
+
+
+def test_feet_spacing_reward_is_symmetric_for_splay_and_pigeon_toes(quadruped_env):
+    quadruped_env._default_feet_width = np.asarray([0.3, 0.3], dtype=np.float32)
+    quadruped_env.feet_pos[:, :, :] = 0.0
+    quadruped_env.feet_pos[:, 0, 1] = 0.15
+    quadruped_env.feet_pos[:, 1, 1] = -0.15
+    quadruped_env.feet_pos[:, 2, 1] = 0.15
+    quadruped_env.feet_pos[:, 3, 1] = -0.15
+    nominal = quadruped_env._reward_feet_spacing(None, None, None)
+
+    quadruped_env.feet_pos[:, :, :] = 0.0
+    quadruped_env.feet_pos[:, 0, 1] = 0.20
+    quadruped_env.feet_pos[:, 1, 1] = -0.20
+    quadruped_env.feet_pos[:, 2, 1] = 0.20
+    quadruped_env.feet_pos[:, 3, 1] = -0.20
+    splay = quadruped_env._reward_feet_spacing(None, None, None)
+
+    quadruped_env.feet_pos[:, :, :] = 0.0
+    quadruped_env.feet_pos[:, 0, 1] = 0.10
+    quadruped_env.feet_pos[:, 1, 1] = -0.10
+    quadruped_env.feet_pos[:, 2, 1] = 0.10
+    quadruped_env.feet_pos[:, 3, 1] = -0.10
+    pigeon = quadruped_env._reward_feet_spacing(None, None, None)
+
+    np.testing.assert_allclose(nominal, np.ones((1,), dtype=np.float32))
+    np.testing.assert_allclose(splay, pigeon, rtol=0.0, atol=1e-8)
+    assert np.all(splay < nominal)
+
+
+def test_feet_spacing_reward_covers_front_and_rear_pairs(quadruped_env):
+    quadruped_env._default_feet_width = np.asarray([0.3, 0.3], dtype=np.float32)
+    quadruped_env.feet_pos[:, :, :] = 0.0
+    quadruped_env.feet_pos[:, 0, 1] = 0.20
+    quadruped_env.feet_pos[:, 1, 1] = -0.20
+    quadruped_env.feet_pos[:, 2, 1] = 0.15
+    quadruped_env.feet_pos[:, 3, 1] = -0.15
+    front_bad = quadruped_env._reward_feet_spacing(None, None, None)
+
+    quadruped_env.feet_pos[:, 0, 1] = 0.15
+    quadruped_env.feet_pos[:, 1, 1] = -0.15
+    quadruped_env.feet_pos[:, 2, 1] = 0.20
+    quadruped_env.feet_pos[:, 3, 1] = -0.20
+    rear_bad = quadruped_env._reward_feet_spacing(None, None, None)
+
+    np.testing.assert_allclose(front_bad, rear_bad)
+    assert np.all(front_bad < 1.0)
+
+
+def test_feet_spacing_reward_does_not_cancel_front_and_rear_errors(quadruped_env):
+    quadruped_env._default_feet_width = np.asarray([0.3, 0.3], dtype=np.float32)
+    quadruped_env.feet_pos[:, :, :] = 0.0
+    quadruped_env.feet_pos[:, 0, 1] = 0.20
+    quadruped_env.feet_pos[:, 1, 1] = -0.20
+    quadruped_env.feet_pos[:, 2, 1] = 0.15
+    quadruped_env.feet_pos[:, 3, 1] = -0.15
+    one_pair_bad = quadruped_env._reward_feet_spacing(None, None, None)
+
+    # The signed front/rear errors have opposite directions, but both pairs are
+    # outside tolerance. Their penalties must not cancel before shaping.
+    quadruped_env.feet_pos[:, 0, 1] = 0.20
+    quadruped_env.feet_pos[:, 1, 1] = -0.20
+    quadruped_env.feet_pos[:, 2, 1] = 0.10
+    quadruped_env.feet_pos[:, 3, 1] = -0.10
+    opposite_signed_bad = quadruped_env._reward_feet_spacing(None, None, None)
+
+    assert np.all(one_pair_bad < 1.0)
+    assert np.all(opposite_signed_bad < one_pair_bad)
+
+
+def test_posture_constraints_are_full_for_sagittal_and_soft_for_lateral_yaw(quadruped_env):
+    quadruped_env._commands = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [0.8, 0.0, 0.0],
+            [-0.8, 0.0, 0.0],
+            [0.0, 0.3, 0.0],
+            [0.0, 0.0, 0.3],
+            [0.0, 0.8, 0.8],
+        ],
+        dtype=np.float32,
+    )
+    scales = quadruped_env._posture_constraint_scale()
+
+    np.testing.assert_allclose(scales[:3], 1.0)
+    np.testing.assert_allclose(scales[3:5], 0.70, rtol=1e-6)
+    np.testing.assert_allclose(scales[5], quadruped_env._POSTURE_GATE_FLOOR)
 
 
 @pytest.mark.parametrize("robot_name", ["go1", "go2", "anymalc"])
