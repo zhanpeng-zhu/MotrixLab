@@ -1,0 +1,220 @@
+{
+  "control": {
+    "angular_velocity_frame": "body",
+    "base_orientation": "body_to_world",
+    "mode": "joint_servo",
+    "period_s": 0.02,
+    "quaternion_order": "xyzw",
+    "state_timeout_s": 0.1
+  },
+  "payloads": [],
+  "policy": {
+    "component_version": "onnx/v1",
+    "input": {
+      "dtype": "float32",
+      "name": "obs",
+      "shape": [
+        1,
+        49
+      ]
+    },
+    "output": {
+      "dtype": "float32",
+      "name": "actions",
+      "shape": [
+        1,
+        12
+      ]
+    },
+    "payload_path": "policy/model.onnx",
+    "sha256": "31474ba36a7373454915a748c87c887251f8e2919743fc7c91f084dab75f22de"
+  },
+  "robot": {
+    "base_link_name": "base",
+    "default_joint_position": [
+      0.0,
+      0.800000011920929,
+      -1.5,
+      0.0,
+      0.800000011920929,
+      -1.5,
+      0.0,
+      0.800000011920929,
+      -1.5,
+      0.0,
+      0.800000011920929,
+      -1.5
+    ],
+    "joint_names": [
+      "FL_hip_joint",
+      "FL_thigh_joint",
+      "FL_calf_joint",
+      "FR_hip_joint",
+      "FR_thigh_joint",
+      "FR_calf_joint",
+      "RL_hip_joint",
+      "RL_thigh_joint",
+      "RL_calf_joint",
+      "RR_hip_joint",
+      "RR_thigh_joint",
+      "RR_calf_joint"
+    ],
+    "position_lower": [
+      -0.9472000002861023,
+      -1.399999976158142,
+      -2.6226999759674072,
+      -0.9472000002861023,
+      -1.399999976158142,
+      -2.6226999759674072,
+      -0.9472000002861023,
+      -1.399999976158142,
+      -2.6226999759674072,
+      -0.9472000002861023,
+      -1.399999976158142,
+      -2.6226999759674072
+    ],
+    "position_upper": [
+      0.9472000002861023,
+      2.5,
+      -0.847760021686554,
+      0.9472000002861023,
+      2.5,
+      -0.847760021686554,
+      0.9472000002861023,
+      2.5,
+      -0.847760021686554,
+      0.9472000002861023,
+      2.5,
+      -0.847760021686554
+    ],
+    "torque_limit": [
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0,
+      24.0
+    ]
+  },
+  "schema_version": "motrix-deploy/v1",
+  "source": {
+    "checkpoint": "checkpoints/latest.pt",
+    "framework": "rslrl.ppo/torch",
+    "run_id": "go2-flatwalk-v1-20261122"
+  },
+  "task": {
+    "config": {
+      "action_lower": [
+        -3.788800001144409,
+        -8.800000190734863,
+        -4.490799903869629,
+        -3.788800001144409,
+        -8.800000190734863,
+        -4.490799903869629,
+        -3.788800001144409,
+        -8.800000190734863,
+        -4.490799903869629,
+        -3.788800001144409,
+        -8.800000190734863,
+        -4.490799903869629
+      ],
+      "action_scale": [
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25,
+        0.25
+      ],
+      "action_upper": [
+        3.788800001144409,
+        6.800000190734863,
+        2.608959913253784,
+        3.788800001144409,
+        6.800000190734863,
+        2.608959913253784,
+        3.788800001144409,
+        6.800000190734863,
+        2.608959913253784,
+        3.788800001144409,
+        6.800000190734863,
+        2.608959913253784
+      ],
+      "command_lower": [
+        -1.0,
+        -0.5,
+        -1.0
+      ],
+      "command_scale": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "command_upper": [
+        1.0,
+        0.5,
+        1.0
+      ],
+      "feet_phase_offsets": [
+        0.0,
+        0.5,
+        0.5,
+        0.0
+      ],
+      "gait_frequency_hz": 2.0,
+      "gait_schedule_enabled": true,
+      "gait_schedule_frequency_high": 2.14,
+      "gait_schedule_frequency_low": 1.05,
+      "gait_schedule_lateral_weight": 1.0,
+      "gait_schedule_smoothing_time_s": 0.6,
+      "gait_schedule_speed_high": 0.8,
+      "gait_schedule_speed_low": 0.2,
+      "gait_schedule_swing_fraction_high": 0.5,
+      "gait_schedule_swing_fraction_low": 0.368,
+      "gait_schedule_yaw_weight": 0.8,
+      "kd": [
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "kp": [
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0,
+        35.0
+      ],
+      "standing_threshold": 0.05,
+      "termination_min_up_z": 0.5
+    },
+    "name": "go2_walk/v1"
+  }
+}
