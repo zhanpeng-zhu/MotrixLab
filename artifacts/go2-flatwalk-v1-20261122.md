@@ -28,6 +28,34 @@ runs/go2-walk-flat/rslrl/torch/ppo/26-11-24_15-51-02-880350
 
 The complete training completed `it0` through `it2999`.
 
+## Required training runtime
+
+This artifact was trained and reproduced with the default PyPI Torch resolution, not the repository CUDA profile:
+
+| Component | Required version |
+|---|---|
+| Python | 3.10 |
+| Torch | `2.11.0` |
+| CUDA runtime bundled with Torch | `13.0` |
+| cuDNN | `9.19.0.56` |
+| Triton | `3.6.0` |
+| RSL-RL | `4.0.1` |
+
+On an NVIDIA host, `sh install.sh --rslrl` selects the repository CUDA profile and installs `torch 2.7.0+cu128`. That environment is suitable for general development, but it does **not** reproduce this checkpoint: training the same source, task configuration, and seed with Torch 2.7 produces measurably different posture and forward-shift metrics.
+
+Keep the default `.venv` unchanged and create an isolated environment for this artifact instead:
+
+```bash
+export UV_PROJECT_ENVIRONMENT="${PWD}/../MotrixLab-go2-flatwalk-env"
+uv sync --frozen --no-default-groups --extra rslrl
+uv sync --frozen --inexact --group test --extra rslrl
+source "${UV_PROJECT_ENVIRONMENT}/bin/activate"
+```
+
+The first sync deliberately omits the `cuda` extra so the locked default PyPI resolution selects Torch 2.11.0. The second sync adds the test tools with `--inexact`, preserving that Torch installation. Do not replace this environment with a bare `uv sync`, `uv run`, or another GPU profile.
+
+Train from the repository root only after activating this environment. A verification run with Torch 2.11.0/CUDA 13.0 produced byte-identical `model_2400.pt` through `model_2999.pt` checkpoints and byte-identical seven-point audit JSON files.
+
 ## Integrity
 
 | File | SHA-256 |
