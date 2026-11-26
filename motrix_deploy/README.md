@@ -52,5 +52,4 @@ hardware. Tasks do not receive runtime handles; simulation does not numerically 
 those phases.
 
 See the [deployment tutorial](../docs/source/en/user_guide/tutorial/advanced/motrix_deploy.md)
-for export, simulation, and hardware workflows, or the [Python example](../examples/deploy.py)
-for programmatic control.
+for export, simulation, hardware, and programmatic workflows.

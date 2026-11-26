@@ -106,7 +106,7 @@ class Go2WalkFlatV2DirectEnvCfg(QuadrupedWalkEnvCfg):
     reward_config: RewardConfig = RewardConfig(
         scales=RewardScales(
             # v2 raises the yaw-tracking signal to retain rotation quality
-            # under the smaller fast-training sample budget.
+            # under the smaller v2 training sample budget.
             tracking_lin_vel=4.5,
             feet_spacing=0.5,
             tracking_ang_vel=1.6,

@@ -10,6 +10,5 @@ With `motrix-deploy-tasks` and a matching exported artifact:
 mxlab deploy task=go2-walk-flat-v2/sim artifact=artifacts/go2-walk-flat-v2.deploy
 ```
 
-For programmatic use, see [deploy.py](../examples/deploy.py).
 Configuration and deployment workflows are covered in the
 [deployment tutorial](../docs/source/en/user_guide/tutorial/advanced/motrix_deploy.md).

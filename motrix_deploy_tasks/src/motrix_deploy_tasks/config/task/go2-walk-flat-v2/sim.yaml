@@ -22,6 +22,8 @@ runtime:
   robot_rotation: [0.0, 0.0, 0.0, 1.0]
   physics:
     dt: 0.002
+    # Match the SimRuntimeCfg default used by previous Go2 deployments.
+    solver_iterations: 100
 
 task_settings:
   command_filter:

@@ -30,15 +30,13 @@ v2 的验收不是“仿真曲线看起来正常”，而是同时满足：
 
 v2 只做训练配方收敛，不改变 actor/critic 网络、观测构造、动作尺度、episode 生命周期或部署输入输出契约。唯一 reward 变化是把 yaw 速度跟踪权重从 1.3 提高到 1.6，用于在较少采样量下保留转向能力。新增的 4 个 pure-yaw hard cases 覆盖无平移速度下的原地转向；课程提前让困难命令在 2000 iterations 内获得充分训练。
 
-## 2026-11-26 随机过程复现验收
+## 2026-11-26 验证记录
 
-第一次 v2 真机验收发现前伸不足、前腿抬起不足和向前失稳。排查确认不是部署契约差异：两个 deployment manifest 除 policy hash 与 run id 外逐字段一致，观测维度、控制周期、joint 顺序、PD 增益与 gait schedule 均相同。真正根因是 hard-case 列表顺序不同。命令采样器使用同一个 RNG 按数组下标抽取 hard case；第一次 v2 配置把 pure-yaw case 插入列表中部，而已实机验证参考配方是在 24 个原 case 后追加。下标到命令的映射不同，导致 hard-case 课程启动后训练随机轨迹从约 iteration 215 开始分离。checkpoint 对比显示 it=0/100/200 权重完全相同，it=300/500/1999 的最大权重差分别扩大到 0.0701/0.409/0.486；仿真指标虽然相近，但真机鲁棒性不同。
+最终配置使用 `go2-walk-flat-v2/rslrl.ppo` 与 seed 1，执行 2000/2000 iterations、1024 个并行环境、4 个 minibatches，共 49.152M steps；训练墙钟 7 分 06 秒，没有提前终止。末段 mean reward 为 102.00、episode length 为 984.82、policy noise std 为 0.0557。
 
-v2 随后修正为在原 24 个 case 之后追加 pure-yaw case，保持 RNG 下标映射不变。复现训练仍使用 1024 env、2000 iterations、4 minibatches、seed 1。最终执行 2000/2000 iterations，墙钟 7 分 06 秒，共 49.152M steps；末段 mean reward 102.00、episode length 984.82、noise std 0.0557。与已实机验证参考策略逐点对比：所有 2000 个 `Loss/value`、`Loss/surrogate`、`Loss/entropy`、`Loss/learning_rate`、`Policy/mean_noise_std` 标量完全相同；所有 1998 个 `Train/mean_reward` 与 `Train/mean_episode_length` 标量完全相同。it=300/500/1000/1999 checkpoint 文件 sha256 完全一致，`checkpoints/latest.pt` sha256 也完全一致。差异仅存在于 FPS、collection/learning time 与 wall-clock 曲线，不影响策略。
+与已实机验证参考策略逐点对比，所有 2000 个 `Loss/value`、`Loss/surrogate`、`Loss/entropy`、`Loss/learning_rate` 与 `Policy/mean_noise_std` 标量完全相同；所有 1998 个 `Train/mean_reward` 与 `Train/mean_episode_length` 标量完全相同。it=300/500/1000/1999 checkpoint 与 `checkpoints/latest.pt` 的 sha256 均一致；差异仅存在于 FPS、collection/learning time 与 wall-clock 标量，不影响策略。
 
-复现训练导出的 `artifacts/go2-walk-flat-v2.deploy` 通过 `mxlab deploy inspect`，32 个 ONNX 抽样最大误差 1.43e-6。ONNX 文件 sha256 与参考版本不同，但差异完全来自模型 metadata 中的 `env_name` 与 `source_checkpoint` 路径；清除 metadata 后两份 ONNX 的确定性序列化 sha256 相同，且 100000 组固定随机输入下 ONNX Runtime 输出逐位相同。因此 v2 artifact 与参考策略是同一策略的可部署产物；manifest 中的策略哈希因源码级元数据路径不同而不同。
-
-该复现版 artifact 已完成真机验收：前伸、抬腿、行走、转向与站立表现符合预期，v2 的部署效果确认收敛到参考策略水平。
+正式 artifact 为 `artifacts/go2-walk-flat-v2.deploy`，`mxlab deploy inspect` 通过，32 个 ONNX 抽样最大误差 1.43e-6。ONNX 文件 sha256 与参考策略不同，但差异只来自模型 metadata 中的环境名和 checkpoint 路径；清除 metadata 后两份 ONNX 的确定性序列化 sha256 相同，100000 组固定随机输入下推理输出逐位相同。该 artifact 已完成真机验收，前伸、抬腿、行走、转向与站立表现符合预期。
 
 ## 分支结构
 
@@ -48,7 +46,7 @@ v2 随后修正为在原 24 个 case 之后追加 pure-yaw case，保持 RNG 下
 go2-walk-flat-v2/rslrl.ppo
 ```
 
-旧的 `go2-walk-flat` 与 `go2-walk-rough` 训练配置和部署 recipe 在该分支中删除。v2 的仿真与真机部署任务分别是：
+v2 的仿真与真机部署任务分别是：
 
 ```text
 go2-walk-flat-v2/sim

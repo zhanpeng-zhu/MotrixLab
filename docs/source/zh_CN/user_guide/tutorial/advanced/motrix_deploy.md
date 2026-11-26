@@ -141,7 +141,7 @@ mxlab deploy task=go2-walk-flat-v2/sim artifact=artifacts/go2-walk-flat-v2.deplo
 | 站立准备超时 | 检查报错中的关节、速度和倾角；调参前排除干涉与异常承重。 |
 | 执行期间 `state_timeout` | 按故障停机处理，保留结果与错误，确保支撑，排查接收后再重试。 |
 
-## 7. 其他任务与 Python 示例
+## 7. 其他任务
 
 G1 WBT 舞蹈使用自身的 artifact 与任务配方，仿真检查示例：
 
@@ -151,19 +151,3 @@ mxlab deploy task=g1-wbt-dance/sim artifact=artifacts/g1-wbt-dance.deploy runtim
 
 artifact 提供 motion 片段，无需速度指令，执行时长不能超过片段长度。播放结束进入阻尼，不保证恢复站立。
 不要把 Go2 按键或交接流程套用于 G1。
-
-在仓库根目录运行程序化 Python 示例，不读取 artifact，也不调用部署 CLI：
-
-```bash
-python examples/deploy.py --headless --steps 100
-python examples/deploy.py --backend motrixsim --headless --steps 100
-```
-
-完成第 4 节的真机安全准备后，可显式选择真机：
-
-```bash
-python examples/deploy.py --real --network-interface enp5s0
-```
-
-示例使用原始 ONNX 和代码中明确声明的机器人与任务参数。替换模型时必须同步核对训练契约，不能仅凭输入输出维度匹配就上真机。
-真机路径保留控制权交接和遥控器确认；CLI 部署仍使用前述 artifact 工作流。

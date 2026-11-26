@@ -20,8 +20,8 @@ from scene_helpers import AdapterSceneObjsCfg, build_scene
 
 from motrix_deploy.contracts import JointServoCommand, RobotSpec, RobotState
 from motrix_deploy.errors import ValidationError
-from motrix_deploy.runtime.control import ControlSession
 from motrix_deploy.runtime.config import SensorBindings, SimulationRuntimeConfig
+from motrix_deploy.runtime.control import ControlSession
 from motrix_deploy_mujoco import (
     MujocoRuntime,
     wxyz_to_xyzw,
@@ -101,13 +101,11 @@ def _backend(
 
 
 def _spec(joint_names: tuple[str, ...] = JOINT_NAMES) -> RobotSpec:
+    robot = build_scene().objs.robot
     return RobotSpec(
         base_link_name="base",
         joint_names=joint_names,
-        default_joint_position=np.array(
-            [0.0, 0.8, -1.5, 0.0, 0.8, -1.5, 0.0, 1.0, -1.5, 0.0, 1.0, -1.5],
-            dtype=np.float32,
-        ),
+        default_joint_position=np.asarray(robot.key_pose.poses[robot.init_key_pose], dtype=np.float32),
         position_lower=np.tile(np.array([-0.9472, -1.4, -2.6227], dtype=np.float32), 4),
         position_upper=np.tile(np.array([0.9472, 2.5, -0.84776], dtype=np.float32), 4),
         torque_limit=np.full(12, 24.0, dtype=np.float32),
