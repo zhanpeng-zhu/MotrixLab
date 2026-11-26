@@ -73,7 +73,7 @@ def _swing_reward(quadruped_env, contacts: np.ndarray) -> np.ndarray:
 
 def test_quadruped_reward_scales_are_structured_and_not_shared():
     go1 = registry.make_env_config("go1-walk-flat").reward_config.scales
-    go2 = registry.make_env_config("go2-walk-flat").reward_config.scales
+    go2 = registry.make_env_config("go2-walk-flat-v2").reward_config.scales
 
     assert isinstance(go1, RewardScales)
     assert isinstance(go2, RewardScales)
@@ -81,7 +81,7 @@ def test_quadruped_reward_scales_are_structured_and_not_shared():
 
 
 def test_go2_uses_locomotion_first_reward_set():
-    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=1, mode="train")
     env.init_state()
     env.step(np.zeros((env.num_envs, *env.action_space.shape), dtype=np.float32))
 
@@ -100,20 +100,21 @@ def test_go2_uses_locomotion_first_reward_set():
 
 
 def test_go2_velocity_command_range_matches_supported_envelope():
-    velocity_cfg = registry.make_env_config("go2-walk-flat").commands.velocity
+    velocity_cfg = registry.make_env_config("go2-walk-flat-v2").commands.velocity
 
     np.testing.assert_allclose(velocity_cfg.lower, np.array([-1.0, -0.5, -1.0], dtype=np.float32))
     np.testing.assert_allclose(velocity_cfg.upper, np.array([1.0, 0.5, 1.0], dtype=np.float32))
 
 
 def test_go2_posture_constraints_use_tighter_tolerances_and_more_standing():
-    env_cfg = registry.make_env_config("go2-walk-flat")
+    env_cfg = registry.make_env_config("go2-walk-flat-v2")
 
     assert env_cfg.commands.velocity.standing_probability == pytest.approx(0.50)
     assert env_cfg.commands.velocity.hard_case_probability == pytest.approx(0.20)
-    assert len(env_cfg.commands.velocity.hard_cases) == 24
+    assert len(env_cfg.commands.velocity.hard_cases) == 28
     hard_cases = {tuple(case) for case in env_cfg.commands.velocity.hard_cases}
     assert all((-case[0], case[1], case[2]) in hard_cases for case in hard_cases)
+    assert all((0.0, 0.0, yaw) in hard_cases for yaw in (-0.8, -0.5, 0.5, 0.8))
     assert env_cfg.reward_config.feet_spacing_tolerance == pytest.approx(0.03)
     assert env_cfg.reward_config.scales.flat_orientation == pytest.approx(-4.0)
     # Raised from -0.3 to damp rapid roll/pitch oscillation without changing
@@ -143,7 +144,7 @@ def test_go2_posture_constraints_use_tighter_tolerances_and_more_standing():
 
 
 def test_tracking_lin_vel_reward_applies_directional_tracking_sigmas():
-    env = registry.make("go2-walk-flat", num_envs=3, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=3, mode="train")
     env.init_state()
     env._commands[:] = np.array(
         [
@@ -171,7 +172,7 @@ def test_tracking_lin_vel_reward_applies_directional_tracking_sigmas():
 
 
 def test_go2_hip_position_reward_only_penalizes_excess_abduction():
-    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=1, mode="train")
     env.init_state()
 
     assert env._hip_indices.size == 4
@@ -202,7 +203,7 @@ def test_go2_dof_acc_reward_uses_worst_joint_acceleration(quadruped_env):
 
 def test_go2_velocity_commands_remain_constant_before_resampling_interval():
     np.random.seed(7)
-    env = registry.make("go2-walk-flat", num_envs=64, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=64, mode="train")
     env.init_state()
     commands = env._commands.copy()
     velocity_cfg = env.cfg.commands.velocity
@@ -218,47 +219,43 @@ def test_go2_velocity_commands_remain_constant_before_resampling_interval():
 
 
 def test_go2_hard_case_curriculum_interpolates_by_training_iteration():
-    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=1, mode="train")
     binding = env._velocity_command_binding
     assert binding.hard_case_probability == pytest.approx(0.0)
     env._set_hard_case_probability(600)
-    assert binding.hard_case_probability == pytest.approx(0.05)
+    assert binding.hard_case_probability == pytest.approx(0.152)
     env._set_hard_case_probability(1000)
-    assert binding.hard_case_probability == pytest.approx(0.15)
+    assert binding.hard_case_probability == pytest.approx(0.20)
     env._set_hard_case_probability(1500)
     assert binding.hard_case_probability == pytest.approx(0.20)
 
 
 def test_go2_play_disables_hard_case_curriculum():
-    env = registry.make("go2-walk-flat", num_envs=1, mode="play")
+    env = registry.make("go2-walk-flat-v2", num_envs=1, mode="play")
     assert env.cfg.commands.velocity.hard_case_curriculum == ()
     assert env._velocity_command_binding.hard_case_probability == pytest.approx(0.0)
 
 
 def test_go2_randomization_is_enabled_for_training_and_disabled_for_play():
-    flat_cfg = registry.make_env_config("go2-walk-flat")
-    rough_cfg = registry.make_env_config("go2-walk-rough")
-    flat_play = registry.make("go2-walk-flat", num_envs=2, mode="play")
-    rough_play = registry.make("go2-walk-rough", num_envs=2, mode="play")
+    flat_cfg = registry.make_env_config("go2-walk-flat-v2")
+    play = registry.make("go2-walk-flat-v2", num_envs=2, mode="play")
 
     assert flat_cfg.randomization.enabled
-    assert rough_cfg.randomization.enabled
     assert flat_cfg.commands.velocity.resampling_seconds_range is not None
-    assert rough_cfg.commands.velocity.resampling_seconds_range is None
-    for play in (flat_play, rough_play):
-        assert not play.cfg.randomization.enabled
-        assert play.cfg.commands.velocity.resampling_seconds_range is None
-        assert play.cfg.noise_config.level == 0.0
+
+    assert not play.cfg.randomization.enabled
+    assert play.cfg.commands.velocity.resampling_seconds_range is None
+    assert play.cfg.noise_config.level == 0.0
 
 
-@pytest.mark.parametrize("env_name", ["go2-walk-flat", "go2-walk-rough"])
+@pytest.mark.parametrize("env_name", ["go2-walk-flat-v2"])
 def test_go2_uses_position_actuators_for_pd_randomization(env_name: str):
     env = registry.make(env_name, num_envs=1, mode="train")
 
     assert all(spec.actuator_type is ActuatorType.POSITION for spec in env.model.actuators)
 
 
-@pytest.mark.parametrize("env_name", ["go2-walk-flat", "go2-walk-rough"])
+@pytest.mark.parametrize("env_name", ["go2-walk-flat-v2"])
 def test_go2_reset_randomization_stays_within_configured_ranges(env_name: str):
     env = registry.make(env_name, num_envs=32, mode="train")
     env.init_state()
@@ -280,7 +277,7 @@ def test_go2_reset_randomization_stays_within_configured_ranges(env_name: str):
 
 
 def test_go2_pd_and_friction_randomization_is_per_env_and_episode_constant():
-    env = registry.make("go2-walk-flat", num_envs=16, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=16, mode="train")
     env.init_state()
     randomization = env.cfg.randomization
     _, kp, damping, friction = _read_param_overrides(env)
@@ -307,7 +304,7 @@ def test_go2_pd_and_friction_randomization_is_per_env_and_episode_constant():
 
 
 def test_go2_base_mass_and_com_randomization_is_per_env_and_episode_constant():
-    env = registry.make("go2-walk-flat", num_envs=16, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=16, mode="train")
     env.init_state()
     randomization = env.cfg.randomization
 
@@ -331,7 +328,7 @@ def test_go2_base_mass_and_com_randomization_is_per_env_and_episode_constant():
 
 
 def test_go2_action_delay_selects_current_or_previous_action_per_env():
-    env = registry.make("go2-walk-flat", num_envs=2, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=2, mode="train")
     state = env.init_state()
     previous = np.full((2, env._num_action), -0.2, dtype=np.float32)
     current = np.full((2, env._num_action), 0.3, dtype=np.float32)
@@ -347,7 +344,7 @@ def test_go2_action_delay_selects_current_or_previous_action_per_env():
 
 
 def test_go2_command_resampling_only_updates_due_environments(monkeypatch: pytest.MonkeyPatch):
-    env = registry.make("go2-walk-flat", num_envs=3, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=3, mode="train")
     env.init_state()
     commands = np.array([[0.1, 0.0, 0.0], [0.2, 0.1, 0.0], [0.3, 0.0, -0.1]], dtype=np.float32)
     replacement = np.array([[0.4, -0.2, 0.3], [0.5, 0.2, -0.3]], dtype=np.float32)
@@ -396,7 +393,7 @@ def test_random_planar_velocity_binding_can_sample_a_standing_batch():
 
 
 def test_go2_partial_reset_only_resamples_finished_environments(monkeypatch: pytest.MonkeyPatch):
-    env = registry.make("go2-walk-flat", num_envs=3, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=3, mode="train")
     state = env.init_state()
     commands = np.array(
         [
@@ -429,7 +426,7 @@ def test_go2_partial_reset_only_resamples_finished_environments(monkeypatch: pyt
 
 
 def test_go2_play_reset_preserves_nominal_joint_state_and_runtime_parameters():
-    env = registry.make("go2-walk-flat", num_envs=4, mode="play")
+    env = registry.make("go2-walk-flat-v2", num_envs=4, mode="play")
     env.init_state()
 
     np.testing.assert_array_equal(
@@ -472,7 +469,7 @@ def test_go2_play_reset_preserves_nominal_joint_state_and_runtime_parameters():
     ],
 )
 def test_quadruped_randomization_config_rejects_invalid_ranges(update, message):
-    cfg = registry.make_env_config("go2-walk-flat")
+    cfg = registry.make_env_config("go2-walk-flat-v2")
     update(cfg)
 
     with pytest.raises(ValueError, match=message):
@@ -480,7 +477,7 @@ def test_quadruped_randomization_config_rejects_invalid_ranges(update, message):
 
 
 def test_gait_schedule_and_stand_transition_are_continuous():
-    env = registry.make("go2-walk-flat", num_envs=2, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=2, mode="train")
     env.init_state()
     cfg = env.cfg
     env._commands[:] = np.array([0.8, 0.0, 0.0], dtype=np.float32)
@@ -517,7 +514,6 @@ def test_gait_schedule_and_stand_transition_are_continuous():
     [
         ("anymalc-walk-flat", "anymalc-walk-rough"),
         ("go1-walk-flat", "go1-walk-rough"),
-        ("go2-walk-flat", "go2-walk-rough"),
     ],
 )
 def test_quadruped_rough_walk_uses_procedural_hfield_and_shared_runtime_config(flat_env, rough_env):
@@ -531,7 +527,7 @@ def test_quadruped_rough_walk_uses_procedural_hfield_and_shared_runtime_config(f
     assert rough_cfg.render_spacing == flat_cfg.render_spacing == 0.0
 
 
-@pytest.mark.parametrize("env_name", ["anymalc-walk-rough", "go1-walk-rough", "go2-walk-rough"])
+@pytest.mark.parametrize("env_name", ["anymalc-walk-rough", "go1-walk-rough"])
 def test_quadruped_rough_walk_reset_and_base_height_are_terrain_relative(env_name):
     env = registry.make(env_name, num_envs=8, mode="train")
     env.init_state()
@@ -563,10 +559,8 @@ def test_foot_position_sensor_names_belong_to_walk_task_config():
 
 @pytest.mark.parametrize("robot_name", ["go1", "go2", "anymalc"])
 def test_walk_task_gyro_config_compiles_for_each_robot(robot_name):
-    cfg = registry.make_env_config(f"{robot_name}-walk-flat")
-    rough_cfg = registry.make_env_config(f"{robot_name}-walk-rough")
-    # Terrain variants use the same model-local gyro wiring; compile each robot only once.
-    assert _sim_data_queries(rough_cfg)["gyro"] == _sim_data_queries(cfg)["gyro"]
+    env_name = "go2-walk-flat-v2" if robot_name == "go2" else f"{robot_name}-walk-flat"
+    cfg = registry.make_env_config(env_name)
     robot = cfg.scene.objs.robot
     backend = MotrixSimBackend(cfg.scene, cfg.sim, 1)
     reads = backend.compile_reads({"gyro": _sim_data_queries(cfg)["gyro"]})
@@ -583,7 +577,7 @@ def test_walk_task_gyro_config_compiles_for_each_robot(robot_name):
 def test_walk_task_gyro_config_is_instance_local():
     first = registry.make_env_config("anymalc-walk-flat")
     second = registry.make_env_config("anymalc-walk-flat")
-    unitree = registry.make_env_config("go2-walk-flat")
+    unitree = registry.make_env_config("go2-walk-flat-v2")
     second_sensor = second.sensor.gyro
     unitree_sensor = unitree.sensor.gyro
     first.sensor.gyro = "custom_gyro"
@@ -609,7 +603,7 @@ def test_walk_gyro_query_reads_renamed_model_sensor_with_scene_affixes(tmp_path,
     class RobotObjsCfg(SceneObjsCfg):
         robot: RobotCfg
 
-    cfg = registry.make_env_config("go2-walk-flat")
+    cfg = registry.make_env_config("go2-walk-flat-v2")
     cfg.scene = SceneCfg(objs=RobotObjsCfg(robot=robot))
     cfg.sensor.gyro = "custom_gyro"
     queries = _sim_data_queries(cfg)
@@ -673,7 +667,7 @@ def test_swing_height_reward_prefers_target_height(quadruped_env):
 
 
 def test_go2_swing_height_reward_uses_lift_plateau_and_slow_place_profile():
-    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=1, mode="train")
     env.init_state()
     env.cfg.reward_config.swing_feet_z_sinusoidal = True
     env._swing_fraction[:] = env.cfg.reward_config.swing_fraction
@@ -707,7 +701,7 @@ def test_go2_swing_height_reward_uses_lift_plateau_and_slow_place_profile():
 
 
 def test_go2_touchdown_velocity_penalty_only_applies_to_low_descending_feet():
-    env = registry.make("go2-walk-flat", num_envs=1, mode="train")
+    env = registry.make("go2-walk-flat-v2", num_envs=1, mode="train")
     env.init_state()
     reward_cfg = env.cfg.reward_config
     sensor_ground_z = (
@@ -933,7 +927,8 @@ def test_posture_constraints_are_full_for_sagittal_and_soft_for_lateral_yaw(quad
 
 @pytest.mark.parametrize("robot_name", ["go1", "go2", "anymalc"])
 def test_walk_state_sensor_queries_resolve_model_and_scene_names(robot_name):
-    cfg = registry.make_env_config(f"{robot_name}-walk-flat")
+    env_name = "go2-walk-flat-v2" if robot_name == "go2" else f"{robot_name}-walk-flat"
+    cfg = registry.make_env_config(env_name)
     robot = cfg.scene.objs.robot
     robot.prefix = "robot_"
     robot.suffix = "_instance"

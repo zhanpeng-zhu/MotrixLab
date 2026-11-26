@@ -32,7 +32,7 @@ from motrix_env_core.config.sim import SimCfg
 from motrix_env_mujoco.compiler import MuJoCoSceneCompiler
 
 ROOT = Path(__file__).parents[2]
-CONFIG_PATH = ROOT / "motrix_deploy_tasks/src/motrix_deploy_tasks/config/task/go2-walk-flat/sim.yaml"
+CONFIG_PATH = ROOT / "motrix_deploy_tasks/src/motrix_deploy_tasks/config/task/go2-walk-flat-v2/sim.yaml"
 FLAT_CONFIG_PATH = CONFIG_PATH
 JOINT_NAMES = (
     "FL_hip_joint",

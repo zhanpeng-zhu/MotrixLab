@@ -19,7 +19,7 @@ from motrix_env_core.input import PlanarVelocityCommand
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("env_name", ["go2-walk-flat", "go2-walk-rough"])
+@pytest.mark.parametrize("env_name", ["go2-walk-flat-v2"])
 def test_go2_training_and_deployment_task_golden_probe(env_name: str) -> None:
     assert motrix_deploy_tasks.__name__
     profile = build_deployment_profile(env_name)
@@ -71,7 +71,7 @@ def test_go2_training_and_deployment_task_golden_probe(env_name: str) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("env_name", ["go2-walk-flat", "go2-walk-rough"])
+@pytest.mark.parametrize("env_name", ["go2-walk-flat-v2"])
 def test_go2_gait_phase_matches_training_across_standing_and_restart(env_name: str) -> None:
     profile = build_deployment_profile(env_name)
     env = registry.make(env_name, num_envs=1, mode="play")

@@ -4,7 +4,7 @@ defaults:
   - /unitree_control@runtime.control: go2
   - _self_
 
-artifact: artifacts/go2-walk-flat.deploy
+artifact: artifacts/go2-walk-flat-v2.deploy
 
 runtime:
   backend: unitree

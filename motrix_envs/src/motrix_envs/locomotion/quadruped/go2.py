@@ -1,7 +1,7 @@
 # Copyright Motphys Technology Co., Ltd. 2025, 2026
 # SPDX-License-Identifier: Apache-2.0
 
-"""Go2 flat- and rough-terrain walk configuration and environment registration."""
+"""Go2 flat-ground v2 walk configuration and environment registration."""
 
 from dataclasses import replace
 
@@ -10,7 +10,7 @@ from motrix_robots.unitree import UnitreeGo2Robot
 
 from motrix_env_core import registry
 from motrix_env_core.config import configclass
-from motrix_env_core.config.scene import FlatTerrainCfg, HFieldTerrainCfg
+from motrix_env_core.config.scene import FlatTerrainCfg
 from motrix_envs.config.scene import StandardSceneObjsCfg
 from motrix_envs.locomotion.quadruped.cfg import (
     Commands,
@@ -18,7 +18,6 @@ from motrix_envs.locomotion.quadruped.cfg import (
     QuadrupedSceneCfg,
     QuadrupedWalkEnvCfg,
     QuadrupedWalkRandomizationCfg,
-    QuadrupedWalkTerrainSceneAssetsCfg,
     RewardConfig,
     RewardScales,
     VelocityCommandCfg,
@@ -26,12 +25,12 @@ from motrix_envs.locomotion.quadruped.cfg import (
 from motrix_envs.locomotion.quadruped.walk_np import QuadrupedWalkTask
 
 
-@registry.envcfg("go2-walk-flat")
+@registry.envcfg("go2-walk-flat-v2")
 @configclass
-class Go2WalkDirectEnvCfg(QuadrupedWalkEnvCfg):
-    """Track walking commands with Unitree Go2 on flat ground.
+class Go2WalkFlatV2DirectEnvCfg(QuadrupedWalkEnvCfg):
+    """Track walking commands with a fast-converging yaw-focused v2 recipe.
 
-    zh_CN: 控制 Unitree Go2 在平地上跟踪行走指令。
+    zh_CN: 使用快速收敛且聚焦 yaw 能力的 v2 配方控制 Unitree Go2 行走。
     """
 
     render_spacing: float = 0.0
@@ -57,6 +56,10 @@ class Go2WalkDirectEnvCfg(QuadrupedWalkEnvCfg):
                 (1.0, 0.5, 0.0),
                 (1.0, -0.5, 0.0),
                 (-1.0, 0.0, 0.0),
+                (0.0, 0.0, 0.5),
+                (0.0, 0.0, -0.5),
+                (0.0, 0.0, 0.8),
+                (0.0, 0.0, -0.8),
                 (0.0, 0.0, 1.0),
                 (0.0, 0.0, -1.0),
                 (-1.0, 0.5, 0.0),
@@ -70,7 +73,9 @@ class Go2WalkDirectEnvCfg(QuadrupedWalkEnvCfg):
                 (-0.8, -0.4, 0.8),
                 (-0.8, -0.4, -0.8),
             ),
-            hard_case_curriculum=((0, 0.0), (400, 0.0), (800, 0.10), (1200, 0.20), (2000, 0.20)),
+            # Reach the terminal hard-case probability earlier than v1 so
+            # the 2000-iteration recipe still sees enough difficult commands.
+            hard_case_curriculum=((0, 0.0), (200, 0.0), (450, 0.08), (700, 0.20), (900, 0.20), (2000, 0.20)),
             hard_case_curriculum_steps_per_iteration=24,
             resampling_seconds_range=(5.0, 10.0),
         )
@@ -100,9 +105,11 @@ class Go2WalkDirectEnvCfg(QuadrupedWalkEnvCfg):
 
     reward_config: RewardConfig = RewardConfig(
         scales=RewardScales(
+            # v2 raises the yaw-tracking signal to retain rotation quality
+            # under the smaller fast-training sample budget.
             tracking_lin_vel=4.5,
             feet_spacing=0.5,
-            tracking_ang_vel=1.3,
+            tracking_ang_vel=1.6,
             action_rate=-0.12,
             dof_acc=-2e-5,
             ang_vel_xy=-0.5,
@@ -140,43 +147,11 @@ class Go2WalkDirectEnvCfg(QuadrupedWalkEnvCfg):
         base_height_target=0.305,
     )
 
-    def for_play(self) -> "Go2WalkDirectEnvCfg":
+    def for_play(self) -> "Go2WalkFlatV2DirectEnvCfg":
         """Return a deterministic Go2 evaluation config."""
 
         cfg = super().for_play()
         return replace(cfg, noise_config=replace(cfg.noise_config, level=0.0))
 
 
-@registry.envcfg("go2-walk-rough")
-@configclass
-class Go2WalkRoughDirectEnvCfg(Go2WalkDirectEnvCfg):
-    """Track walking commands with Unitree Go2 on a procedural rough height field.
-
-    zh_CN: 控制 Unitree Go2 在程序化粗糙高度场上跟踪行走指令。
-    """
-
-    commands: Commands = Commands(
-        velocity=VelocityCommandCfg(
-            lower=np.array([-1.0, -0.5, -1.0], dtype=np.float32),
-            upper=np.array([1.0, 0.5, 1.0], dtype=np.float32),
-            standing_probability=0.1,
-        )
-    )
-    scene: QuadrupedSceneCfg = QuadrupedSceneCfg(
-        assets=QuadrupedWalkTerrainSceneAssetsCfg(),
-        objs=StandardSceneObjsCfg(
-            floor=HFieldTerrainCfg(
-                hfield="terrain",
-                material="mat_ground",
-                friction=(0.6, 0.005, 0.0001),
-            ),
-            robot=UnitreeGo2Robot(),
-        ),
-    )
-    reward_config: RewardConfig = RewardConfig(
-        target_foot_height=0.1,
-    )
-
-
-registry.env("go2-walk-flat")(QuadrupedWalkTask)
-registry.env("go2-walk-rough")(QuadrupedWalkTask)
+registry.env("go2-walk-flat-v2")(QuadrupedWalkTask)

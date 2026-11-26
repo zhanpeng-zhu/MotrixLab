@@ -14,8 +14,7 @@ from motrix_envs.deploy.robot import build_robot_model, build_robot_spec, read_p
 from motrix_envs.locomotion.quadruped.cfg import QuadrupedWalkEnvCfg
 
 GO2_COMMAND_SCALES = {
-    "go2-walk-flat": np.ones(3, dtype=np.float32),
-    "go2-walk-rough": np.full(3, 0.5, dtype=np.float32),
+    "go2-walk-flat-v2": np.ones(3, dtype=np.float32),
 }
 
 
