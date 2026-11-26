@@ -56,10 +56,6 @@ class Go2WalkFlatV2DirectEnvCfg(QuadrupedWalkEnvCfg):
                 (1.0, 0.5, 0.0),
                 (1.0, -0.5, 0.0),
                 (-1.0, 0.0, 0.0),
-                (0.0, 0.0, 0.5),
-                (0.0, 0.0, -0.5),
-                (0.0, 0.0, 0.8),
-                (0.0, 0.0, -0.8),
                 (0.0, 0.0, 1.0),
                 (0.0, 0.0, -1.0),
                 (-1.0, 0.5, 0.0),
@@ -72,6 +68,10 @@ class Go2WalkFlatV2DirectEnvCfg(QuadrupedWalkEnvCfg):
                 (-0.8, 0.4, -0.8),
                 (-0.8, -0.4, 0.8),
                 (-0.8, -0.4, -0.8),
+                (0.0, 0.0, 0.5),
+                (0.0, 0.0, -0.5),
+                (0.0, 0.0, 0.8),
+                (0.0, 0.0, -0.8),
             ),
             # Reach the terminal hard-case probability earlier than v1 so
             # the 2000-iteration recipe still sees enough difficult commands.

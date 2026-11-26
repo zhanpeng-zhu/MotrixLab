@@ -115,6 +115,14 @@ def test_go2_posture_constraints_use_tighter_tolerances_and_more_standing():
     hard_cases = {tuple(case) for case in env_cfg.commands.velocity.hard_cases}
     assert all((-case[0], case[1], case[2]) in hard_cases for case in hard_cases)
     assert all((0.0, 0.0, yaw) in hard_cases for yaw in (-0.8, -0.5, 0.5, 0.8))
+    # The RNG selects hard cases by array index. Preserve the validated order:
+    # the original 24 cases first, then the four mid-speed pure-yaw cases.
+    assert env_cfg.commands.velocity.hard_cases[-4:] == (
+        (0.0, 0.0, 0.5),
+        (0.0, 0.0, -0.5),
+        (0.0, 0.0, 0.8),
+        (0.0, 0.0, -0.8),
+    )
     assert env_cfg.reward_config.feet_spacing_tolerance == pytest.approx(0.03)
     assert env_cfg.reward_config.scales.flat_orientation == pytest.approx(-4.0)
     # Raised from -0.3 to damp rapid roll/pitch oscillation without changing
