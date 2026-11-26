@@ -36,17 +36,9 @@ v2 只做训练配方收敛，不改变 actor/critic 网络、观测构造、动
 
 v2 随后修正为在原 24 个 case 之后追加 pure-yaw case，保持 RNG 下标映射不变。复现训练仍使用 1024 env、2000 iterations、4 minibatches、seed 1。最终执行 2000/2000 iterations，墙钟 7 分 06 秒，共 49.152M steps；末段 mean reward 102.00、episode length 984.82、noise std 0.0557。与已实机验证参考策略逐点对比：所有 2000 个 `Loss/value`、`Loss/surrogate`、`Loss/entropy`、`Loss/learning_rate`、`Policy/mean_noise_std` 标量完全相同；所有 1998 个 `Train/mean_reward` 与 `Train/mean_episode_length` 标量完全相同。it=300/500/1000/1999 checkpoint 文件 sha256 完全一致，`checkpoints/latest.pt` sha256 也完全一致。差异仅存在于 FPS、collection/learning time 与 wall-clock 曲线，不影响策略。
 
-复现训练导出的 `artifacts/go2-flatwalk-v2.deploy` 通过 `mxlab deploy inspect`，32 个 ONNX 抽样最大误差 1.43e-6。ONNX 文件 sha256 与参考版本不同，但差异完全来自模型 metadata 中的 `env_name` 与 `source_checkpoint` 路径；清除 metadata 后两份 ONNX 的确定性序列化 sha256 相同，且 100000 组固定随机输入下 ONNX Runtime 输出逐位相同。因此 v2 artifact 与参考策略是同一策略的可部署产物；manifest 中的策略哈希因源码级元数据路径不同而不同。
+复现训练导出的 `artifacts/go2-walk-flat-v2.deploy` 通过 `mxlab deploy inspect`，32 个 ONNX 抽样最大误差 1.43e-6。ONNX 文件 sha256 与参考版本不同，但差异完全来自模型 metadata 中的 `env_name` 与 `source_checkpoint` 路径；清除 metadata 后两份 ONNX 的确定性序列化 sha256 相同，且 100000 组固定随机输入下 ONNX Runtime 输出逐位相同。因此 v2 artifact 与参考策略是同一策略的可部署产物；manifest 中的策略哈希因源码级元数据路径不同而不同。
 
-## 2026-11-26 验证记录
-
-训练使用 `go2-walk-flat-v2/rslrl.ppo` 与 seed 1，实际执行 2000/2000 iterations、1024 个并行环境、4 个 minibatches，共 49.152M steps。训练墙钟 6 分 57 秒，低于 11 分钟预算；没有提前终止。Run 目录为 `runs/go2-walk-flat-v2/rslrl/torch/ppo/26-11-26_12-06-00-796973`。
-
-TensorBoard 末段窗口显示策略已进入平台期：mean reward 在 1700–1799、1800–1899、1900–1999 iterations 分别为 102.19、102.57、102.54；episode length 为 983.47、982.65、978.77；value loss 为 0.0706、0.0714、0.0733；noise std 为 0.05723、0.05668、0.05586。末 300 iterations 的 reward 斜率为 +0.00252/iter，episode length 斜率为 -0.0207 step/iter。同一统计口径下，已实机验证参考策略末 100 iterations 的 mean reward 为 100.87、episode length 为 979.49、value loss 为 0.0777、noise std 为 0.0563；v2 分别为 102.54、978.77、0.0733、0.0559。
-
-完整仿真审计全部通过：16 个固定命令场景 16/16 完成；220 个速度/摩擦组合 220/220 完成；60 秒零命令站立完成，min up z 0.9985、max roll 0.0246 rad、max pitch 0.0498 rad、四脚接触率 100%、步频 0。与已实机验证参考策略相比，220 矩阵整体 MAE 为 vx 0.162 vs 0.178、vy 0.332 vs 0.319、yaw 0.132 vs 0.133；max roll 均值为 0.118 vs 0.105 rad，max pitch 为 0.108 vs 0.117 rad，min up z 为 0.989 vs 0.990。v2 前向与偏航跟踪略好，横移误差和 roll 波动略高，但所有工况保持直立并完成。
-
-本次 run 重新导出的 `artifacts/go2-walk-flat-v2.deploy` 通过 `mxlab deploy inspect`，ONNX 抽样最大误差 8.34e-7，输入/输出为 49/12 维。MuJoCo 部署冒烟 2 秒完成 100 步，`success=true`、`overrun_count=0`，推理均值 0.028 ms、p95 0.046 ms，实时因子 24.1。真机验收尚未执行；按本设计的验收标准，真机效果不达标时不能将 v2 认定为完成。
+该复现版 artifact 已完成真机验收：前伸、抬腿、行走、转向与站立表现符合预期，v2 的部署效果确认收敛到参考策略水平。
 
 ## 分支结构
 

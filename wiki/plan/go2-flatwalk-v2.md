@@ -12,4 +12,4 @@
 - [x] 与已实机验证参考策略对比，确认配置迁移正确。
 - [x] 完成仿真部署冒烟。
 - [x] 修正 hard-case 采样顺序并完成严格复现训练：TensorBoard 学习曲线逐点一致、checkpoint sha256 一致、ONNX 推理输出逐位一致。
-- [ ] 完成复现版本 artifact 的真机验收。
+- [x] 完成复现版本 artifact 的真机验收。
