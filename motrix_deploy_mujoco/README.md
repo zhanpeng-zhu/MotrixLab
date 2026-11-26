@@ -7,7 +7,7 @@ joint control, and an optional interactive viewer.
 With `motrix-deploy-tasks` and a matching exported artifact:
 
 ```bash
-mxlab deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy
+mxlab deploy task=go2-walk-flat-v2/sim artifact=artifacts/go2-walk-flat-v2.deploy
 ```
 
 For programmatic use, see [deploy.py](../examples/deploy.py).

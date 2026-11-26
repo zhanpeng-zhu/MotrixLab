@@ -22,11 +22,11 @@ Artifact deployment reuses the installed simulation recipes rather than introduc
 backend-specific task copies:
 
 ```bash
-mxlab deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy \
+mxlab deploy task=go2-walk-flat-v2/sim artifact=artifacts/go2-walk-flat-v2.deploy \
   runtime.backend=motrixsim runtime.viewer=false runtime.realtime=false duration_s=1
 ```
 
-The same override applies to `task=go2-walk-rough/sim`. Install this backend package
+Install this backend package
 explicitly for standalone use, alongside `motrix-deploy-tasks` and the robot models.
 MotrixSim is supplied by `motrix-env-motrixsim`, using the workspace's pinned SDK version.
 

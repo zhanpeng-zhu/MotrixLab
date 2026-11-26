@@ -15,7 +15,7 @@ for the provider recipe and discovery requirements.
 With the Go2 task and a simulation backend installed:
 
 ```bash
-mxlab deploy task=go2-walk-flat/sim artifact=artifacts/go2-walk-flat.deploy
+mxlab deploy task=go2-walk-flat-v2/sim artifact=artifacts/go2-walk-flat-v2.deploy
 ```
 
 ## Hardware API

@@ -29,8 +29,8 @@ The following videos replay the `rslrl.ppo` policies for Go1, Go2, and ANYmal-C.
 
 :::{grid-item-card} Unitree Go2
 
-```{video} /_static/videos/go2-walk-rough.mp4
-:poster: /_static/images/poster/go2-walk-rough.jpg
+```{video} /_static/videos/go1-walk-rough.mp4
+:poster: /_static/images/poster/go1-walk-rough.jpg
 :nocontrols:
 :autoplay:
 :playsinline:
@@ -79,31 +79,22 @@ open the full-size SVG.
 | --- | --- | --- | --- | --- |
 | `go1-walk-flat` | Unitree Go1 | Flat ground | `rslrl.ppo`, `skrl.ppo` | — |
 | `go1-walk-rough` | Unitree Go1 | Procedural rough height field | `rslrl.ppo`, `skrl.ppo` | <button type="button" class="training-curve-thumbnail" data-training-curve-dialog="go1-walk-rough-curve" aria-label="Enlarge the Unitree Go1 rough-terrain training curve"><img src="../../_static/images/performance/go1-walk-rough.svg" alt="Unitree Go1 rough-terrain RSL-RL PPO training curve" width="180"></button> |
-| `go2-walk-flat` | Unitree Go2 | Flat ground | `motrix.fastsac`, `rslrl.ppo`, `skrl.ppo` | — |
-| `go2-walk-rough` | Unitree Go2 | Procedural rough height field | `motrix.fastsac`, `rslrl.ppo`, `skrl.ppo` | <button type="button" class="training-curve-thumbnail" data-training-curve-dialog="go2-walk-rough-curve" aria-label="Enlarge the Unitree Go2 rough-terrain training curve"><img src="../../_static/images/performance/go2-walk-rough.svg" alt="Unitree Go2 rough-terrain RSL-RL PPO training curve" width="180"></button> |
+| `go2-walk-flat-v2` | Unitree Go2 | Flat ground | `rslrl.ppo` | — |
 | `anymalc-walk-flat` | ANYmal-C | Flat ground | `rslrl.ppo`, `skrl.ppo` | — |
 | `anymalc-walk-rough` | ANYmal-C | Procedural rough height field | `rslrl.ppo`, `skrl.ppo` | <button type="button" class="training-curve-thumbnail" data-training-curve-dialog="anymalc-walk-rough-curve" aria-label="Enlarge the ANYmal-C rough-terrain training curve"><img src="../../_static/images/performance/anymalc-walk-rough.svg" alt="ANYmal-C rough-terrain RSL-RL PPO training curve" width="180"></button> |
 :::
 
 <dialog id="go1-walk-rough-curve" class="training-curve-dialog" aria-labelledby="go1-walk-rough-curve-caption">
-  <button type="button" class="training-curve-dialog-close" data-training-curve-close aria-label="Close training curve">×</button>
   <img src="../../_static/images/performance/go1-walk-rough.svg" alt="Unitree Go1 rough-terrain RSL-RL PPO training curve">
   <p id="go1-walk-rough-curve-caption">Unitree Go1 (<code>go1-walk-rough</code>) training curve</p>
 </dialog>
 
-<dialog id="go2-walk-rough-curve" class="training-curve-dialog" aria-labelledby="go2-walk-rough-curve-caption">
-  <button type="button" class="training-curve-dialog-close" data-training-curve-close aria-label="Close training curve">×</button>
-  <img src="../../_static/images/performance/go2-walk-rough.svg" alt="Unitree Go2 rough-terrain RSL-RL PPO training curve">
-  <p id="go2-walk-rough-curve-caption">Unitree Go2 (<code>go2-walk-rough</code>) training curve</p>
-</dialog>
-
 <dialog id="anymalc-walk-rough-curve" class="training-curve-dialog" aria-labelledby="anymalc-walk-rough-curve-caption">
-  <button type="button" class="training-curve-dialog-close" data-training-curve-close aria-label="Close training curve">×</button>
   <img src="../../_static/images/performance/anymalc-walk-rough.svg" alt="ANYmal-C rough-terrain RSL-RL PPO training curve">
   <p id="anymalc-walk-rough-curve-caption">ANYmal-C (<code>anymalc-walk-rough</code>) training curve</p>
 </dialog>
 
-The flat-ground and rough-terrain configs for each robot share the robot, control, commands, rewards, spawn range, and
+The flat-ground and rough-terrain variants that share a robot also share the robot, control, commands, rewards, spawn range, and
 termination logic; only the scene terrain differs. The curves in the table show rough-terrain training progress: the x-axis
 reports cumulative environment steps, and the y-axis reports mean episode return, making learning progress and convergence
 trends easy to inspect. Returns rise rapidly early in training and then stabilize, showing that the policies quickly learn
@@ -120,10 +111,10 @@ mxlab train task=ENV_ID/TRAINING_CONFIG
 mxlab play env=ENV_ID num_envs=16
 ```
 
-For example, train the Go2 rough-terrain task with RSL-RL PPO:
+For example, train the Go1 rough-terrain task with RSL-RL PPO:
 
 ```bash
-mxlab train task=go2-walk-rough/rslrl.ppo
+mxlab train task=go1-walk-rough/rslrl.ppo
 ```
 
 `mxlab view` applies random actions and is intended for scene and model inspection. Use `mxlab play` with a trained policy to

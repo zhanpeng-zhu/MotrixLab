@@ -28,8 +28,8 @@
 
 :::{grid-item-card} Unitree Go2
 
-```{video} /_static/videos/go2-walk-rough.mp4
-:poster: /_static/images/poster/go2-walk-rough.jpg
+```{video} /_static/videos/go1-walk-rough.mp4
+:poster: /_static/images/poster/go1-walk-rough.jpg
 :nocontrols:
 :autoplay:
 :playsinline:
@@ -77,26 +77,17 @@ MotrixLab 已为下列机器人提供平地和程序化粗糙高度场配置。�
 | --- | --- | --- | --- | --- |
 | `go1-walk-flat` | Unitree Go1 | 平地 | `rslrl.ppo`、`skrl.ppo` | — |
 | `go1-walk-rough` | Unitree Go1 | 程序化粗糙高度场 | `rslrl.ppo`、`skrl.ppo` | <button type="button" class="training-curve-thumbnail" data-training-curve-dialog="go1-walk-rough-curve" aria-label="放大 Unitree Go1 粗糙地形训练曲线"><img src="../../_static/images/performance/go1-walk-rough.svg" alt="Unitree Go1 粗糙地形 RSL-RL PPO 训练曲线" width="180"></button> |
-| `go2-walk-flat` | Unitree Go2 | 平地 | `motrix.fastsac`、`rslrl.ppo`、`skrl.ppo` | — |
-| `go2-walk-rough` | Unitree Go2 | 程序化粗糙高度场 | `motrix.fastsac`、`rslrl.ppo`、`skrl.ppo` | <button type="button" class="training-curve-thumbnail" data-training-curve-dialog="go2-walk-rough-curve" aria-label="放大 Unitree Go2 粗糙地形训练曲线"><img src="../../_static/images/performance/go2-walk-rough.svg" alt="Unitree Go2 粗糙地形 RSL-RL PPO 训练曲线" width="180"></button> |
+| `go2-walk-flat-v2` | Unitree Go2 | 平地 | `rslrl.ppo` | — |
 | `anymalc-walk-flat` | ANYmal-C | 平地 | `rslrl.ppo`、`skrl.ppo` | — |
 | `anymalc-walk-rough` | ANYmal-C | 程序化粗糙高度场 | `rslrl.ppo`、`skrl.ppo` | <button type="button" class="training-curve-thumbnail" data-training-curve-dialog="anymalc-walk-rough-curve" aria-label="放大 ANYmal-C 粗糙地形训练曲线"><img src="../../_static/images/performance/anymalc-walk-rough.svg" alt="ANYmal-C 粗糙地形 RSL-RL PPO 训练曲线" width="180"></button> |
 :::
 
 <dialog id="go1-walk-rough-curve" class="training-curve-dialog" aria-labelledby="go1-walk-rough-curve-caption">
-  <button type="button" class="training-curve-dialog-close" data-training-curve-close aria-label="关闭训练曲线">×</button>
   <img src="../../_static/images/performance/go1-walk-rough.svg" alt="Unitree Go1 粗糙地形 RSL-RL PPO 训练曲线">
   <p id="go1-walk-rough-curve-caption">Unitree Go1（<code>go1-walk-rough</code>）训练曲线</p>
 </dialog>
 
-<dialog id="go2-walk-rough-curve" class="training-curve-dialog" aria-labelledby="go2-walk-rough-curve-caption">
-  <button type="button" class="training-curve-dialog-close" data-training-curve-close aria-label="关闭训练曲线">×</button>
-  <img src="../../_static/images/performance/go2-walk-rough.svg" alt="Unitree Go2 粗糙地形 RSL-RL PPO 训练曲线">
-  <p id="go2-walk-rough-curve-caption">Unitree Go2（<code>go2-walk-rough</code>）训练曲线</p>
-</dialog>
-
 <dialog id="anymalc-walk-rough-curve" class="training-curve-dialog" aria-labelledby="anymalc-walk-rough-curve-caption">
-  <button type="button" class="training-curve-dialog-close" data-training-curve-close aria-label="关闭训练曲线">×</button>
   <img src="../../_static/images/performance/anymalc-walk-rough.svg" alt="ANYmal-C 粗糙地形 RSL-RL PPO 训练曲线">
   <p id="anymalc-walk-rough-curve-caption">ANYmal-C（<code>anymalc-walk-rough</code>）训练曲线</p>
 </dialog>
@@ -116,10 +107,10 @@ mxlab train task=ENV_ID/TRAINING_CONFIG
 mxlab play env=ENV_ID num_envs=16
 ```
 
-例如，使用 RSL-RL PPO 训练 Go2 粗糙地形任务：
+例如，使用 RSL-RL PPO 训练 Go1 粗糙地形任务：
 
 ```bash
-mxlab train task=go2-walk-rough/rslrl.ppo
+mxlab train task=go1-walk-rough/rslrl.ppo
 ```
 
 `mxlab view` 使用随机动作，仅用于检查场景和模型；训练后的步态需要通过 `mxlab play` 回放策略查看。
